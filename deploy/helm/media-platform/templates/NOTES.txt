@@ -1,0 +1,23 @@
+
+media-platform {{ .Chart.AppVersion }} installata nel namespace {{ .Release.Namespace }}.
+
+Si entra da:  {{ .Values.ingress.scheme }}://{{ .Values.ingress.host }}
+
+Perché quel nome funzioni dal Mac, la riga nel suo /etc/hosts deve puntare
+all'indirizzo del nodo che ospita l'ingresso.
+
+Cosa guardare, in ordine:
+
+  deploy/cluster/app.sh status
+      i pod, i dischi e la memoria che stanno usando
+
+  deploy/cluster/cluster.sh kubectl get jobs
+      db-migrate e create-buckets devono risultare completati: finché non lo
+      sono, il database non ha tabelle e l'object storage non ha bucket
+
+  deploy/cluster/app.sh logs worker-service
+      il registro di un servizio
+
+I primi secondi dopo l'installazione tutti i pod sono "non pronti": stanno
+aspettando database, broker e object storage, che partono nello stesso momento.
+È normale, e non serve intervenire.

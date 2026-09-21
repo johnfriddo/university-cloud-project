@@ -1,0 +1,193 @@
+# La porta d'ingresso: un solo nome di dominio, quattro destinazioni.
+#
+#   /            → frontend    la pagina
+#   /api/auth    → api-service registrazione e accesso, con limite di frequenza
+#   /api         → api-service le altre chiamate
+#   /originals   → minio       il file caricato dal browser
+#   /derived     → minio       le varianti generate dal worker
+#
+# Le ultime due non sono un'invenzione: MinIO si indirizza come
+# endpoint/bucket/chiave, quindi l'indirizzo di un oggetto del bucket
+# "originals" comincia per /originals. Basta portare quel prefisso a MinIO
+# perché i link firmati funzionino.
+#
+# Perché tutto sotto un solo nome di dominio: il browser considera due
+# indirizzi «la stessa origine» solo se coincidono schema, nome e porta.
+# Caricando il file su un nome diverso da quello della pagina servirebbe il
+# permesso esplicito di MinIO (CORS) — e in docker compose infatti serviva.
+#
+# --- Perché due oggetti e non uno ------------------------------------------
+#
+# Le annotazioni di NGINX valgono per **l'intero Ingress**, non per la singola
+# rotta. Un limite di frequenza scritto su un Ingress unico colpirebbe anche
+# /derived, cioè le decine di miniature che il browser chiede tutte insieme
+# aprendo la libreria.
+#
+# La soluzione che il controller offre è l'Ingress «componibile»: un **master**
+# che possiede il nome di dominio, e dei **minion** che portano le rotte,
+# ognuno con le proprie annotazioni.
+#
+# --- Su AWS -----------------------------------------------------------------
+#
+# Il ramo in fondo al file: un Application Load Balancer con due rotte sole.
+# /originals e /derived spariscono perché il browser parla direttamente con S3,
+# e il limite di frequenza su /api/auth non c'è — su AWS sarebbe mestiere di
+# WAF, che non fa parte dello stack (appendice B della relazione).
+{{- if eq .Values.platform "local" }}
+{{- $host := .Values.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: media-platform
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+  annotations:
+    nginx.org/mergeable-ingress-type: "master"
+    # Sul master perché valgono per tutto il server.
+    #
+    # Il tetto di NGINX sul corpo di una richiesta: il predefinito è 1 MB, e
+    # senza questa riga ogni caricamento oltre quella soglia verrebbe respinto
+    # dall'ingresso con un 413, prima ancora di arrivare a MinIO, mentre
+    # l'applicazione ne accetta fino a 25.
+    nginx.org/client-max-body-size: {{ .Values.ingress.maxBodySize | quote }}
+    # Un caricamento lento su una rete lenta non è un servizio bloccato.
+    nginx.org/proxy-read-timeout: "{{ .Values.ingress.proxyTimeoutSeconds }}s"
+    nginx.org/proxy-send-timeout: "{{ .Values.ingress.proxyTimeoutSeconds }}s"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    # Il master dichiara il nome e nessuna rotta: le rotte sono dei minion.
+    # Il nome di dominio è obbligatorio — il controller di F5 rifiuta una
+    # regola senza `host`. Vedi docs/registro-cluster.md.
+    - host: {{ $host }}
+---
+{{- if .Values.ingress.authRateLimit.enabled }}
+# Registrazione e accesso, le uniche rotte con un limite di frequenza.
+#
+# È qui che si tenta di indovinare una password, ed è l'unico posto dove un
+# limite per indirizzo ha senso: sulle altre rotte il traffico legittimo è a
+# raffiche — la griglia della libreria chiede sessanta miniature insieme.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: media-platform-auth
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+  annotations:
+    nginx.org/mergeable-ingress-type: "minion"
+    nginx.org/limit-req-rate: {{ .Values.ingress.authRateLimit.rate | quote }}
+    # Quante richieste oltre il ritmo si accettano di colpo prima di rifiutare.
+    nginx.org/limit-req-burst: {{ .Values.ingress.authRateLimit.burst | quote }}
+    # Servite subito invece di essere messe in attesa: a chi sbaglia password
+    # conviene dire «no» adesso, non farlo aspettare.
+    nginx.org/limit-req-no-delay: "true"
+    # 429 «troppe richieste», non il 503 predefinito, che significherebbe
+    # «servizio non disponibile» e sarebbe una bugia.
+    nginx.org/limit-req-reject-code: "429"
+    # La chiave del conteggio **non** è l'indirizzo del chiamante ma una
+    # variabile calcolata dal controller, che vale l'indirizzo per chi arriva
+    # da fuori e stringa vuota per chi arriva dalla rete interna del cluster —
+    # e a chiave vuota NGINX non applica nessun limite.
+    #
+    # Serve perché la suite di integrazione gira **dentro** il cluster e fa 61
+    # richieste di autenticazione in 31 secondi da un solo indirizzo: misurato.
+    # Un limite stretto abbastanza da servire la fermerebbe. La definizione di
+    # quella variabile sta in deploy/cluster/nginx-ingress-values.yaml.
+    nginx.org/limit-req-key: "${{ .Values.ingress.authRateLimit.key }}"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /api/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8000
+---
+{{- end }}
+# Tutto il resto, senza limiti.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: media-platform-app
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+  annotations:
+    nginx.org/mergeable-ingress-type: "minion"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          # Prefissi più lunghi prima: è comunque il prefisso più specifico a
+          # vincere, ma l'ordine di lettura segue quello di scrittura.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8000
+          - path: /{{ .Values.app.bucketOriginals }}
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9000
+          - path: /{{ .Values.app.bucketDerived }}
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 8080
+{{- else }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: media-platform
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+  annotations:
+    # L'ALB manda il traffico direttamente agli indirizzi dei pod, che con la
+    # rete di EKS sono indirizzi veri della VPC. L'alternativa ("instance")
+    # passerebbe da una porta aperta su ogni nodo: un salto in più, e Service
+    # di tipo NodePort invece dei ClusterIP che il chart già usa.
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  # La classe la crea Terraform (deploy/terraform/aws/app), insieme ai
+  # parametri che dicono all'ALB di stare su Internet.
+  ingressClassName: alb
+  rules:
+    # Nessun nome di dominio: l'ALB risponde al proprio indirizzo pubblico, che
+    # AWS assegna alla creazione.
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 8080
+{{- end }}

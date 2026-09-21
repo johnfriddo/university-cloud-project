@@ -1,0 +1,92 @@
+{{- /* Solo in locale: su AWS al suo posto c'è un servizio gestito, fuori dal cluster. */ -}}
+{{- if eq .Values.platform "local" }}
+# MinIO: l'object storage. Tiene gli originali caricati dal browser e le
+# varianti generate dal worker.
+#
+# È l'unico archivio dati che riceve traffico dall'esterno: il browser carica
+# e scarica direttamente qui, con link firmati, e le rotte /originals e
+# /derived dell'ingresso arrivano a questo Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+  selector:
+    {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "minio") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "minio") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "minio") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: minio
+          image: {{ .Values.images.minio }}
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom: { secretKeyRef: { name: app-secrets, key: MINIO_ROOT_USER } }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: MINIO_ROOT_PASSWORD } }
+            # Nessun permesso CORS, a differenza di docker compose. Lì il
+            # browser parlava con localhost:9000 mentre la pagina veniva da
+            # localhost:8080: due origini diverse, e senza permesso esplicito
+            # il browser avrebbe bloccato l'upload. Qui pagina e storage
+            # stanno dietro lo stesso nome di dominio, quindi la stessa
+            # origine, e il problema non esiste.
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          # MinIO espone due indirizzi di controllo suoi. Costano una
+          # richiesta HTTP, non un processo in più: qui le sonde applicative
+          # si possono usare.
+          livenessProbe:
+            httpGet: { path: /minio/health/live, port: api }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /minio/health/live, port: api }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.minio.storage }}
+
+{{- end }}

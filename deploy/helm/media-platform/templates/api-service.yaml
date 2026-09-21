@@ -1,0 +1,92 @@
+# api-service: l'unico servizio che il browser interroga. Registra le
+# immagini, firma i link temporanei, pubblica i job e risponde 202.
+#
+# Deployment e non StatefulSet: non ha nessuno stato da conservare. La sessione
+# dell'utente è un token firmato che il servizio non memorizza, quindi due
+# repliche non hanno niente da spartirsi e si possono accendere e spegnere
+# liberamente.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+  {{- if eq .Values.platform "aws" }}
+  annotations:
+    # L'ALB controlla ogni pod per conto suo, e di suo chiederebbe "/", dove
+    # l'API risponde 404: la dichiarerebbe malata e non le manderebbe niente.
+    # La sonda di vitalità, non quella di prontezza: a togliere dalla
+    # rotazione un pod che non è pronto ci pensa già Kubernetes.
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health/live
+  {{- end }}
+spec:
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+  selector:
+    {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "api-service") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiService.replicas }}
+  selector:
+    matchLabels:
+      {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "api-service") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "media-platform.configChecksums" . | nindent 8 }}
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "api-service") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: api-service
+      {{- include "media-platform.nodeSelector" . | nindent 6 }}
+      containers:
+        - name: api-service
+          image: {{ include "media-platform.image" (dict "ctx" . "service" "api-service") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            {{- include "media-platform.envFrom" . | nindent 12 }}
+          env:
+            - name: SERVICE_NAME
+              value: api-service
+            - name: SERVICE_VERSION
+              value: {{ .Chart.AppVersion | quote }}
+          resources:
+            {{- toYaml .Values.apiService.resources | nindent 12 }}
+          # Le due sonde rispondono a due domande diverse, e la differenza
+          # decide cosa fa Kubernetes.
+          #
+          # live dice solo che il processo è vivo: se fallisce, il pod viene
+          # riavviato. Per questo non interroga le dipendenze — un database
+          # irraggiungibile farebbe riavviare l'API all'infinito senza che il
+          # riavvio possa risolvere niente.
+          #
+          # ready dice che il servizio può lavorare: interroga PostgreSQL, il
+          # broker e l'object storage. Se fallisce il pod resta acceso ma
+          # esce dai destinatari del Service, e nessuna richiesta gli arriva
+          # finché non torna in sé.
+          startupProbe:
+            httpGet: { path: /api/health/live, port: http }
+            periodSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /api/health/live, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /api/health/ready, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3

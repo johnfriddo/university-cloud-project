@@ -1,0 +1,94 @@
+{{- /* Solo in locale: su AWS al suo posto c'è un servizio gestito, fuori dal cluster. */ -}}
+{{- if eq .Values.platform "local" }}
+# RabbitMQ: la coda dei job e l'exchange degli eventi.
+#
+# Il disco serve davvero: un messaggio pubblicato come persistente sopravvive
+# al riavvio del broker solo se c'è un posto dove scriverlo.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    # L'interfaccia di amministrazione. Non è esposta all'esterno: ci si
+    # arriva con `kubectl port-forward`, e in tappa 5.5 è da qui che KEDA
+    # legge quanti messaggi ci sono in coda.
+    - name: management
+      port: 15672
+      targetPort: 15672
+  selector:
+    {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "rabbitmq") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "rabbitmq") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "rabbitmq") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: rabbitmq
+          image: {{ .Values.images.rabbitmq }}
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom: { secretKeyRef: { name: app-secrets, key: RABBITMQ_USER } }
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom: { secretKeyRef: { name: app-secrets, key: RABBITMQ_PASSWORD } }
+            # Il nome del nodo Erlang. Fisso, perché è scritto dentro i file
+            # sul disco: se cambiasse a ogni riavvio il broker non
+            # riconoscerebbe più i propri dati.
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@localhost"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+          resources:
+            {{- toYaml .Values.rabbitmq.resources | nindent 12 }}
+          # Sonde sulla porta, per la stessa ragione di MongoDB: ogni
+          # `rabbitmq-diagnostics` avvia un secondo nodo Erlang per fare la
+          # domanda, e costa più memoria di quanta ne valga la risposta. Chi
+          # ha bisogno di sapere se il broker risponde — l'api-service, il
+          # worker, il notification-service — lo verifica nella propria
+          # readiness, con la connessione che usa davvero.
+          livenessProbe:
+            tcpSocket: { port: 5672 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket: { port: 5672 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.rabbitmq.storage }}
+
+{{- end }}

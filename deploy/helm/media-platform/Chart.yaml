@@ -1,0 +1,16 @@
+apiVersion: v2
+name: media-platform
+description: Piattaforma di elaborazione immagini — traduzione in Kubernetes dello stack di docker compose
+type: application
+
+# La versione del chart: cambia quando cambiano i template.
+version: 0.1.0
+# La versione dell'applicazione: è l'etichetta delle immagini importate nei
+# nodi da deploy/cluster/images.sh. Le due cose si muovono separatamente.
+appVersion: "0.1.0"
+
+# I CronJob con fuso orario (timeZone) sono stabili dalla 1.27.
+kubeVersion: ">=1.27.0-0"
+
+maintainers:
+  - name: Marco Gionfriddo

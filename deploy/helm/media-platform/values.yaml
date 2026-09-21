@@ -1,0 +1,271 @@
+# Valori predefiniti del chart.
+#
+# Qui dentro non c'è nessuna password: le credenziali stanno in
+# deploy/helm/values.local.yaml, che git ignora e che
+# `deploy/cluster/app.sh secrets` genera una volta sola con valori casuali.
+# Se mancano, il chart si rifiuta di installarsi invece di partire con
+# password prevedibili.
+
+# --- Dove gira ----------------------------------------------------------------
+#
+# "local": il cluster Multipass. Gli archivi dati girano dentro il cluster,
+# come StatefulSet, e l'ingresso è NGINX.
+#
+# "aws": EKS. Gli archivi sono servizi gestiti fuori dal cluster (RDS, Amazon
+# MQ, DynamoDB, S3), l'ingresso è un Application Load Balancer, e i servizi
+# accedono ad AWS con un ruolo IAM invece che con delle chiavi. I valori di
+# questo caso li scrive Terraform (deploy/terraform/aws/app): nessuno li
+# copia a mano.
+platform: local
+
+aws:
+  region: ""
+  # Indirizzi dei servizi gestiti.
+  postgresHost: ""
+  rabbitmqHost: ""
+  metadataTable: ""
+  snsTopicArn: ""
+  # Il ruolo IAM che ciascun servizio assume (IRSA). Vuoto: nessun ruolo.
+  roles:
+    apiService: ""
+    workerService: ""
+    notificationService: ""
+
+# Su quali nodi possono girare i pod. Su AWS: solo ARM, perché le immagini
+# sono costruite su un Mac ARM e su una macchina x86 non partirebbero.
+nodeSelector: {}
+
+# --- Da dove si entra -------------------------------------------------------
+
+ingress:
+  # Il controller di F5 non accetta regole senza nome di dominio, quindi
+  # l'applicazione ha un nome. Deve stare nel /etc/hosts del Mac, puntato
+  # all'indirizzo del nodo che ospita l'ingresso (vedi docs/registro-cluster.md).
+  host: media-platform.test
+  className: nginx
+  # Senza porta nell'indirizzo: la firma dei link temporanei copre anche il
+  # nome dell'host, e NGINX inoltra l'host *senza* la porta. Con :30080 nel
+  # link firmato e senza :30080 nell'header ricevuto, MinIO rifiuterebbe ogni
+  # download. Per questo l'ingresso ascolta sulla porta 80 del nodo.
+  scheme: http
+  # Il tetto di NGINX sul corpo di una richiesta. L'applicazione accetta file
+  # fino a 25 MB e quei byte passano di qui: un tetto più basso li fermerebbe
+  # all'ingresso, con un errore che il frontend non sa spiegare.
+  maxBodySize: 32m
+  # Un upload lento su una rete lenta non è un guasto.
+  proxyTimeoutSeconds: 120
+
+  # Il limite di frequenza sulle sole rotte di registrazione e accesso.
+  #
+  # Solo lì: è dove si tenta di indovinare una password, ed è l'unico posto
+  # dove un limite per indirizzo ha senso. Sul resto il traffico legittimo è a
+  # raffiche — aprendo la libreria il browser chiede sessanta miniature
+  # insieme, e un limite le farebbe rifiutare.
+  authRateLimit:
+    enabled: true
+    # Dieci tentativi al minuto per indirizzo. Un essere umano che accede ne fa
+    # uno; chi prova password ne vorrebbe migliaia.
+    rate: "10r/m"
+    # Più cinque di scorta, per non punire chi sbaglia a digitare.
+    burst: "5"
+    # La variabile calcolata dal controller d'ingresso: vale l'indirizzo del
+    # chiamante per chi arriva da fuori, e **stringa vuota** per chi arriva
+    # dalla rete interna del cluster — dove gira la suite di integrazione, che
+    # fa 118 richieste di autenticazione al minuto da un solo indirizzo.
+    # A chiave vuota NGINX non applica nessun limite.
+    # La definizione sta in deploy/cluster/nginx-ingress-values.yaml.
+    key: "media_platform_ratelimit_key"
+
+# --- Le immagini ------------------------------------------------------------
+
+image:
+  # Le quattro immagini dell'applicazione, importate nei nodi da
+  # deploy/cluster/images.sh: media-platform/<servizio>:<tag>.
+  repository: media-platform
+  tag: "0.1.0"
+  # Never, non IfNotPresent: non esiste nessun registro da cui scaricarle, e
+  # un tentativo di scaricamento lascerebbe i pod in ErrImagePull per sempre.
+  # In Fase 7 diventa IfNotPresent, con ECR dietro.
+  pullPolicy: Never
+
+# Le immagini di terze parti, scaricate dai nodi. Versioni fissate: "latest"
+# su un cluster significa che due installazioni a distanza di un mese non
+# stanno eseguendo lo stesso software.
+images:
+  postgres: postgres:16-alpine
+  mongo: mongo:7
+  rabbitmq: rabbitmq:3.13-management-alpine
+  # Ultima versione comunitaria di MinIO, presa da quay.io: su Docker Hub il
+  # nome `minio/minio` risponde «repository does not exist or may require
+  # authorization», ed è il registro che MinIO indica nella propria
+  # documentazione.
+  minio: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+
+# --- Gli archivi dati -------------------------------------------------------
+#
+# I tetti di memoria non sono pignoleria: i due nodi operai hanno 1,4 GB
+# ciascuno, di cui circa 950 MB liberi. Il bilancio completo è nel README del
+# chart e in docs/registro-cluster.md.
+
+postgres:
+  storage: 2Gi
+  # shared_buffers predefinito è 128 MB, più di metà del tetto del pod.
+  sharedBuffers: 64MB
+  maxConnections: 50
+  resources:
+    requests: { memory: 128Mi, cpu: 100m }
+    limits: { memory: 256Mi }
+
+mongo:
+  storage: 2Gi
+  # La cache di WiredTiger, senza indicazioni, si prende metà della memoria
+  # della macchina — non del container — e farebbe uccidere il pod.
+  wiredTigerCacheGB: "0.25"
+  resources:
+    requests: { memory: 192Mi, cpu: 100m }
+    limits: { memory: 320Mi }
+
+rabbitmq:
+  storage: 1Gi
+  resources:
+    requests: { memory: 160Mi, cpu: 100m }
+    limits: { memory: 300Mi }
+
+minio:
+  storage: 4Gi
+  resources:
+    requests: { memory: 160Mi, cpu: 100m }
+    limits: { memory: 320Mi }
+
+# --- I servizi applicativi --------------------------------------------------
+
+apiService:
+  replicas: 1
+  resources:
+    requests: { memory: 128Mi, cpu: 100m }
+    limits: { memory: 256Mi }
+
+workerService:
+  # Usato solo se l'autoscaling è spento: con KEDA acceso il numero di repliche
+  # lo decide lui, e il chart non lo scrive nemmeno — altrimenti ogni
+  # reinstallazione riporterebbe il conteggio a 1, annullando le decisioni
+  # dell'autoscaler.
+  replicas: 1
+
+  autoscaling:
+    enabled: true
+    # Mai sotto uno: KEDA saprebbe scendere a zero, ma la prima immagine dopo
+    # una pausa aspetterebbe l'avvio del pod.
+    minReplicas: 1
+    # Il tetto sono i due nodi: oltre, Kubernetes non troverebbe dove mettere
+    # la replica.
+    maxReplicas: 3
+    # Quanti messaggi in coda "valgono" una replica.
+    messagesPerReplica: "5"
+
+    # Quanto Kubernetes aspetta prima di dare seguito a una discesa. È l'unica
+    # manopola che conta finché il minimo è 1: da lì in su chi decide quante
+    # repliche servono è l'HorizontalPodAutoscaler, che interroga la metrica
+    # ogni 15 secondi. Il predefinito sarebbe 300 secondi, prudenza pensata per
+    # i servizi HTTP; qui chi aspetta è una coda, e il lavoro non si perde.
+    scaleDownWindowSeconds: 60
+
+    # Questi due servono **solo** se minReplicas diventa 0: sono le soglie con
+    # cui KEDA decide di accendere la prima replica e di spegnere l'ultima. Con
+    # un minimo di 1 il chart non li scrive nemmeno, perché KEDA li rifiuta con
+    # un avviso — «PollingInterval is configured but is not relevant».
+    pollingIntervalSeconds: 10
+    cooldownSeconds: 60
+
+  prefetchCount: "1"
+  maxAttempts: "3"
+  resources:
+    # Più alto degli altri: Pillow apre l'immagine per intero in memoria, e
+    # una foto da 25 MB compressi può valere qualche centinaio di MB di pixel.
+    requests: { memory: 160Mi, cpu: 200m }
+    limits: { memory: 384Mi }
+  # Il tempo che Kubernetes concede per finire l'immagine che il worker ha in
+  # mano prima di terminarlo a forza.
+  terminationGracePeriodSeconds: 120
+
+notificationService:
+  replicas: 1
+  maxAttempts: "3"
+  resources:
+    requests: { memory: 64Mi, cpu: 50m }
+    limits: { memory: 128Mi }
+
+frontend:
+  replicas: 1
+  resources:
+    requests: { memory: 32Mi, cpu: 20m }
+    limits: { memory: 64Mi }
+
+# --- Lavori una tantum e periodici ------------------------------------------
+
+migrate:
+  # Quante volte Kubernetes riprova il Job se fallisce. Il caso normale è che
+  # PostgreSQL non sia ancora in piedi: parte insieme a lui.
+  backoffLimit: 20
+  resources:
+    requests: { memory: 96Mi, cpu: 100m }
+    limits: { memory: 192Mi }
+
+buckets:
+  backoffLimit: 20
+  resources:
+    requests: { memory: 96Mi, cpu: 100m }
+    limits: { memory: 192Mi }
+
+# Il guardiano delle code dei rifiutati: conta e scrive nel registro.
+dlqWatch:
+  enabled: true
+  # Ogni quindici minuti. Un messaggio rifiutato non ha fretta, ma nemmeno
+  # senso restare invisibile fino a domani.
+  schedule: "*/15 * * * *"
+  timeZone: Europe/Rome
+  resources:
+    requests: { memory: 64Mi, cpu: 50m }
+    limits: { memory: 128Mi }
+
+cleanup:
+  enabled: true
+  # Ogni notte alle 3. Le registrazioni abbandonate non hanno fretta.
+  schedule: "0 3 * * *"
+  timeZone: Europe/Rome
+  olderThanHours: 24
+  resources:
+    requests: { memory: 96Mi, cpu: 100m }
+    limits: { memory: 192Mi }
+
+# --- Configurazione dell'applicazione ---------------------------------------
+
+app:
+  postgresDatabase: media
+  mongoDatabase: media
+  bucketOriginals: originals
+  bucketDerived: derived
+  jobQueue: media.process
+  eventsExchange: media.events
+  notificationsQueue: notifications
+  # Le code dove finisce quello che nessuno è riuscito a elaborare.
+  dlqQueue: media.process.dlq
+  notificationsDlq: notifications.dlq
+  maxUploadBytes: "26214400"
+  jwtTtlSeconds: "3600"
+  watermarkText: "© media platform"
+
+# --- Credenziali ------------------------------------------------------------
+#
+# Vuote apposta. Le riempie deploy/helm/values.local.yaml; se restano vuote il
+# chart si ferma con il nome della credenziale mancante.
+secrets:
+  postgresUser: ""
+  postgresPassword: ""
+  mongoUser: ""
+  mongoPassword: ""
+  rabbitmqUser: ""
+  rabbitmqPassword: ""
+  minioRootUser: ""
+  minioRootPassword: ""
+  jwtSecret: ""

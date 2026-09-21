@@ -1,0 +1,83 @@
+# I due lavori che devono girare una volta sola prima che il sistema serva a
+# qualcosa: applicare lo schema del database e creare i bucket. Sono gli stessi
+# due comandi che in docker compose sono i servizi `db-migrate` e `minio-init`.
+#
+# Perché Job normali e non hook di Helm. Un hook post-install parte *dopo* che
+# Helm ha visto tutto pronto, e l'api-service non diventa pronto finché il
+# bucket non esiste: si aspetterebbero a vicenda per sempre. Nati insieme a
+# tutto il resto, invece, i due Job riprovano finché archivio e database non
+# rispondono, e nessuno aspetta nessuno.
+#
+# Il nome contiene il numero della revisione perché un Job, una volta creato,
+# non si può modificare: alla seconda installazione Helm troverebbe un oggetto
+# identico e immutabile, e si fermerebbe. Con la revisione nel nome ogni
+# aggiornamento ne crea uno nuovo, e Helm cancella il precedente.
+{{- $suffix := printf "%d" .Release.Revision }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-{{ $suffix }}
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  # Il Job e i suoi pod si cancellano da soli dieci minuti dopo la fine: il
+  # registro di cosa è successo resta, ma non si accumulano pod finiti.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "db-migrate") | nindent 8 }}
+    spec:
+      # OnFailure e non Never: il caso normale è che PostgreSQL non sia ancora
+      # in piedi, e riprovare nello stesso pod costa meno che crearne uno nuovo.
+      restartPolicy: OnFailure
+      containers:
+        - name: db-migrate
+          image: {{ include "media-platform.image" (dict "ctx" . "service" "api-service") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.migrate"]
+          envFrom:
+            {{- include "media-platform.envFrom" . | nindent 12 }}
+          env:
+            - name: SERVICE_NAME
+              value: db-migrate
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+      {{- include "media-platform.nodeSelector" . | nindent 6 }}
+{{- /* Su AWS i bucket li crea Terraform, con le loro regole: qui non c'è niente da fare. */}}
+{{- if eq .Values.platform "local" }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-buckets-{{ $suffix }}
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.buckets.backoffLimit }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "create-buckets") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-buckets
+          # L'immagine dell'api-service, non un client dell'object storage: è
+          # un'immagine in meno da portare dentro un cluster che le immagini
+          # se le porta a mano, e il comando è lo stesso che usa docker compose.
+          image: {{ include "media-platform.image" (dict "ctx" . "service" "api-service") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.buckets"]
+          envFrom:
+            {{- include "media-platform.envFrom" . | nindent 12 }}
+          env:
+            - name: SERVICE_NAME
+              value: create-buckets
+          resources:
+            {{- toYaml .Values.buckets.resources | nindent 12 }}
+{{- end }}

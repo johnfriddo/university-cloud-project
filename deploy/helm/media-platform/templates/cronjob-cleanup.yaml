@@ -1,0 +1,61 @@
+{{- if .Values.cleanup.enabled }}
+# La pulizia delle registrazioni abbandonate, ogni notte.
+#
+# Un caricamento è in due passi con un browser in mezzo: prima si registra
+# l'immagine e si riceve il link firmato, poi si dice che il file è arrivato.
+# Se il browser sparisce fra i due — scheda chiusa, rete caduta — resta una
+# riga che non diventerà mai un'immagine, e forse un file nel bucket che
+# nessuno reclamerà. Questo comando cancella le une e gli altri.
+#
+# In docker compose lo stesso comando si lancia a mano; qui ha un orario.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.cleanup.schedule | quote }}
+  # Senza, Kubernetes userebbe UTC: alle 3 del mattino di un fuso che non è
+  # quello di nessuno.
+  timeZone: {{ .Values.cleanup.timeZone | quote }}
+  # Se l'esecuzione di ieri sta ancora girando, quella di oggi non parte: due
+  # pulizie contemporanee si darebbero fastidio a vicenda.
+  concurrencyPolicy: Forbid
+  # Il cluster resta spento per giorni interi. Senza questo limite, alla
+  # riaccensione Kubernetes considererebbe "in ritardo" ogni esecuzione
+  # saltata; con 3600 secondi, un'esecuzione persa da più di un'ora viene
+  # semplicemente dimenticata, invece di partire tutte insieme.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "media-platform.labels" . | nindent 12 }}
+            {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "cleanup") | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: api-service
+          {{- include "media-platform.nodeSelector" . | nindent 10 }}
+          containers:
+            - name: cleanup
+              image: {{ include "media-platform.image" (dict "ctx" . "service" "api-service") }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command:
+                - python
+                - -m
+                - app.cleanup
+                - --older-than-hours
+                - {{ .Values.cleanup.olderThanHours | quote }}
+              envFrom:
+                {{- include "media-platform.envFrom" . | nindent 16 }}
+              env:
+                - name: SERVICE_NAME
+                  value: cleanup
+              resources:
+                {{- toYaml .Values.cleanup.resources | nindent 16 }}
+{{- end }}

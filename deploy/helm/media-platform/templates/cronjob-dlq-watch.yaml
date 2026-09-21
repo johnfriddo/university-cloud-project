@@ -1,0 +1,57 @@
+{{- if .Values.dlqWatch.enabled }}
+# Il guardiano delle code dei rifiutati.
+#
+# Un messaggio finisce in una coda dei rifiutati quando nessuno è riuscito a
+# capirlo, o quando i tentativi si sono esauriti. È un fatto che vale la pena
+# sapere — e fino a ieri nel sistema non lo diceva nessuno: le code c'erano e
+# nessuno le guardava.
+#
+# Quello che questo fa è **rilevare e scrivere**, non avvisare. In un cluster
+# di laboratorio il limite onesto è che qualcuno deve leggere il registro, o
+# lanciare `deploy/cluster/app.sh status`. L'allarme che sveglia una persona è
+# roba della Fase 7, dove lo stesso conteggio diventa un allarme CloudWatch
+# sulla coda di SQS.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dlq-watch
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.dlqWatch.schedule | quote }}
+  timeZone: {{ .Values.dlqWatch.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  # Il cluster resta spento per giorni. Senza questo limite, alla riaccensione
+  # Kubernetes considererebbe «in ritardo» ogni esecuzione saltata.
+  startingDeadlineSeconds: 600
+  # Le esecuzioni fallite si conservano più a lungo delle riuscite: una
+  # esecuzione fallita **è** il segnale, e cancellarla subito nasconderebbe
+  # proprio quello che si vuole vedere in `kubectl get jobs`.
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # Nessun ritentativo: se le code non sono vuote non lo saranno nemmeno
+      # al secondo tentativo, e ripetere trasformerebbe un avviso in rumore.
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "media-platform.labels" . | nindent 12 }}
+            {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "dlq-watch") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- include "media-platform.nodeSelector" . | nindent 10 }}
+          containers:
+            - name: dlq-watch
+              image: {{ include "media-platform.image" (dict "ctx" . "service" "api-service") }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["python", "-m", "app.dlq_watch"]
+              envFrom:
+                {{- include "media-platform.envFrom" . | nindent 16 }}
+              env:
+                - name: SERVICE_NAME
+                  value: dlq-watch
+              resources:
+                {{- toYaml .Values.dlqWatch.resources | nindent 16 }}
+{{- end }}

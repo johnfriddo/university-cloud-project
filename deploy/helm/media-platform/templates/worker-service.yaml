@@ -1,0 +1,105 @@
+# worker-service: consuma i job dalla coda e genera le varianti.
+#
+# Riceve lavoro solo dal broker: nessuno lo chiama, e la porta 8000 esiste
+# perché Kubernetes possa chiedergli come sta.
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-service
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  # Senza indirizzo proprio: il nome risolve direttamente sugli indirizzi dei
+  # pod. Non c'è niente da bilanciare — nessuno manda richieste qui — ma il
+  # nome serve per andare a leggere la prontezza di un worker da fuori, che è
+  # come si verifica un guasto (deploy/cluster/faults.sh).
+  clusterIP: None
+  # E soprattutto: **anche i pod non pronti**. Il comportamento normale di
+  # Kubernetes è togliere dal DNS un pod che non è pronto, il che qui sarebbe
+  # perfetto per nascondere proprio il caso che si vuole osservare — un worker
+  # vivo che dichiara di non poter lavorare.
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+  selector:
+    {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "worker-service") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-service
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.workerService.autoscaling.enabled }}
+  replicas: {{ .Values.workerService.replicas }}
+  {{- else }}
+  # Nessun numero di repliche, di proposito: lo decide il ScaledObject. Se
+  # restasse scritto qui, ogni `helm upgrade` riporterebbe il conteggio al
+  # valore del chart, cancellando in un istante quello che l'autoscaler aveva
+  # deciso guardando la coda.
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "worker-service") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "media-platform.configChecksums" . | nindent 8 }}
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "worker-service") | nindent 8 }}
+    spec:
+      # Molto più lungo degli altri: quando Kubernetes decide di spegnere un
+      # worker — un aggiornamento, una riduzione di repliche — quello può
+      # avere un'immagine a metà. Su SIGTERM smette di prendere nuovi
+      # messaggi e finisce quello che ha in mano; questo è il tempo che gli
+      # viene concesso per farlo prima di essere ucciso.
+      terminationGracePeriodSeconds: {{ .Values.workerService.terminationGracePeriodSeconds }}
+      serviceAccountName: worker-service
+      {{- include "media-platform.nodeSelector" . | nindent 6 }}
+      containers:
+        - name: worker-service
+          image: {{ include "media-platform.image" (dict "ctx" . "service" "worker-service") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            {{- include "media-platform.envFrom" . | nindent 12 }}
+          env:
+            - name: SERVICE_NAME
+              value: worker-service
+            - name: SERVICE_VERSION
+              value: {{ .Chart.AppVersion | quote }}
+            # Un messaggio non confermato alla volta. Con un carico a burst il
+            # broker deve poter distribuire i job su tutte le repliche: un
+            # valore alto li accumulerebbe sul primo worker, lasciando gli
+            # altri fermi e rendendo inutile l'autoscaling della tappa 5.5.
+            - name: PREFETCH_COUNT
+              value: {{ .Values.workerService.prefetchCount | quote }}
+            - name: MAX_ATTEMPTS
+              value: {{ .Values.workerService.maxAttempts | quote }}
+            - name: WATERMARK_TEXT
+              value: {{ .Values.app.watermarkText | quote }}
+          resources:
+            {{- toYaml .Values.workerService.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          # Qui ready non toglie traffico a nessuno — nessuno chiama il worker
+          # — ma resta il modo di vedere da fuori se sta davvero lavorando:
+          # un worker in attesa del broker risponde 503 e si vede subito in
+          # `kubectl get pods`, invece di sembrare sano e non fare niente.
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3

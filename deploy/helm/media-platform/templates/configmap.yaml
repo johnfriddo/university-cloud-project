@@ -1,0 +1,64 @@
+# I valori di configurazione che non sono segreti: nomi di code, di bucket,
+# limiti. Corrispondono al blocco &app-env di docker-compose.yml, meno le
+# credenziali, che stanno nel Secret accanto.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+data:
+{{- if eq .Values.platform "local" }}
+  MONGO_DATABASE: {{ .Values.app.mongoDatabase | quote }}
+
+  # I due indirizzi dell'object storage, che sono diversi apposta.
+  #
+  # Il primo è quello che usano i servizi, dentro il cluster. Il secondo è
+  # quello su cui vengono firmati i link temporanei, e deve essere un indirizzo
+  # che il *browser* sa raggiungere: firmare con il nome interno produrrebbe
+  # link validi per noi e inutilizzabili per chiunque altro.
+  S3_ENDPOINT_INTERNAL: "http://minio:9000"
+  S3_ENDPOINT_PUBLIC: "{{ .Values.ingress.scheme }}://{{ .Values.ingress.host }}"
+
+  S3_REGION: "us-east-1"
+  # MinIO si indirizza come endpoint/bucket/chiave: è anche il motivo per cui
+  # l'ingresso può smistare /originals e /derived a MinIO come fossero rotte.
+  S3_ADDRESSING_STYLE: "path"
+{{- else }}
+  # Nessun indirizzo dell'archivio, né interno né pubblico: dove sia S3 la
+  # libreria lo sa già, e i link firmati puntano a S3 stesso, che il browser
+  # raggiunge senza passare dal cluster.
+  S3_ENDPOINT_INTERNAL: ""
+  S3_ENDPOINT_PUBLIC: ""
+  S3_REGION: {{ .Values.aws.region | quote }}
+  # bucket.s3.regione.amazonaws.com/chiave: la forma che S3 preferisce.
+  S3_ADDRESSING_STYLE: "virtual"
+  # La regione per DynamoDB e SNS. Il meccanismo IRSA di solito la inietta da
+  # sé nei pod; scriverla qui evita di dipendere da un "di solito".
+  AWS_REGION: {{ .Values.aws.region | quote }}
+
+  # I metadati tecnici su DynamoDB invece che su MongoDB.
+  METADATA_BACKEND: "dynamodb"
+  METADATA_TABLE: {{ .Values.aws.metadataTable | quote }}
+
+  # Gli avvisi su SNS invece che nel registro.
+  NOTIFICATION_CHANNEL: "sns"
+  SNS_TOPIC_ARN: {{ .Values.aws.snsTopicArn | quote }}
+{{- end }}
+
+  S3_BUCKET_ORIGINALS: {{ .Values.app.bucketOriginals | quote }}
+  S3_BUCKET_DERIVED: {{ .Values.app.bucketDerived | quote }}
+
+  JOB_QUEUE: {{ .Values.app.jobQueue | quote }}
+  EVENTS_EXCHANGE: {{ .Values.app.eventsExchange | quote }}
+  NOTIFICATIONS_QUEUE: {{ .Values.app.notificationsQueue | quote }}
+
+  # Le code dei rifiutati. Dichiarate qui, e non lasciate ai valori
+  # predefiniti sparsi nel codice, perché adesso c'è qualcuno che le guarda:
+  # il CronJob `dlq-watch` deve cercarle con lo stesso nome con cui i
+  # consumatori le creano.
+  DLQ_QUEUE: {{ .Values.app.dlqQueue | quote }}
+  NOTIFICATIONS_DLQ: {{ .Values.app.notificationsDlq | quote }}
+
+  MAX_UPLOAD_BYTES: {{ .Values.app.maxUploadBytes | quote }}
+  JWT_TTL_SECONDS: {{ .Values.app.jwtTtlSeconds | quote }}

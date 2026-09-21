@@ -1,0 +1,76 @@
+# frontend: l'applicazione Angular già compilata, servita da Nginx.
+#
+# Nessuna variabile dell'applicazione: il codice Angular gira nel browser, e
+# quello che gli serve lo chiede a /api, che è un indirizzo relativo. Le due
+# variabili qui sotto configurano Nginx, non Angular.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+  {{- if eq .Values.platform "aws" }}
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+  {{- end }}
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "frontend") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "frontend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "frontend") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      {{- include "media-platform.nodeSelector" . | nindent 6 }}
+      containers:
+        - name: frontend
+          image: {{ include "media-platform.image" (dict "ctx" . "service" "frontend") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # L'indirizzo del DNS non si passa più: l'immagine lo legge da sé
+            # dal proprio /etc/resolv.conf. Su EKS Auto Mode è stato
+            # necessario, perché lì non esiste nessun servizio kube-dns da
+            # nominare e il valore che passavamo prima non corrispondeva a
+            # niente: il frontend si riavviava in continuazione.
+            #
+            # In pratica questo inoltro non viene mai usato, perché è
+            # l'Ingress a portare /api all'api-service prima che la richiesta
+            # arrivi qui. Resta corretto lo stesso: una configurazione che
+            # "tanto non si usa" è una trappola per chi la troverà.
+            - name: API_UPSTREAM
+              value: "http://api-service:8000"
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          # Nginx serve file statici: se il processo è vivo, è pronto. Le due
+          # sonde chiedono quindi la stessa cosa, ed è giusto così.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3

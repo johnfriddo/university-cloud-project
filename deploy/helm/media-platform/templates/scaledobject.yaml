@@ -1,0 +1,97 @@
+{{- if .Values.workerService.autoscaling.enabled }}
+# Le repliche del worker, decise dalla lunghezza della coda.
+#
+# Kubernetes da solo sa scalare su CPU e memoria, e qui nessuna delle due dice
+# niente di utile: un worker fermo in attesa di un messaggio non consuma CPU, e
+# quando la consumerebbe il carico sarebbe già arrivato tutto. Il numero che
+# conta è **quanti messaggi aspettano**, e KEDA è il pezzo che lo va a leggere
+# e lo consegna al normale HorizontalPodAutoscaler.
+#
+# È la scelta giusta per questo carico: un utente carica duecento immagini in
+# un colpo e poi sparisce per ore.
+
+# Come KEDA si collega al broker. La password non compare qui: viene letta dal
+# Secret che c'è già, e nemmeno KEDA se la scrive da nessuna parte.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rabbitmq-auth
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: app-secrets
+      # Non RABBITMQ_URL: KEDA interroga la coda dal proprio namespace, dove
+      # il nome breve `rabbitmq` non risolve.
+      key: RABBITMQ_URL_FQDN
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-service
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: worker-service
+
+  # Mai sotto una replica. KEDA saprebbe scendere fino a zero e risparmiare
+  # quei 160 Mi, ma la prima immagine caricata dopo una pausa aspetterebbe il
+  # giro di interrogazione più l'avvio del pod: una decina di secondi in cui
+  # l'utente guarda una rotella. Con un carico vero, e una bolletta, il
+  # ragionamento si ribalta ed è una riga sola da cambiare.
+  minReplicaCount: {{ .Values.workerService.autoscaling.minReplicas }}
+  # Il tetto non è prudenza: sono i due nodi da 1,4 GB. Ogni replica in più si
+  # prenota {{ .Values.workerService.resources.requests.memory }}, e oltre
+  # questo numero Kubernetes non troverebbe dove metterla.
+  maxReplicaCount: {{ .Values.workerService.autoscaling.maxReplicas }}
+
+  {{- if eq (int .Values.workerService.autoscaling.minReplicas) 0 }}
+  # Questi due valgono **soltanto** quando il minimo è zero, ed è per questo
+  # che compaiono solo in quel caso: KEDA li usa per decidere quando accendere
+  # la prima replica e quando spegnere l'ultima. Con un minimo di uno, chi
+  # decide è per intero l'HorizontalPodAutoscaler, e scriverli qui non
+  # cambierebbe niente — KEDA lo segnala con un avviso, che è esattamente come
+  # è stato scoperto.
+  pollingInterval: {{ .Values.workerService.autoscaling.pollingIntervalSeconds }}
+  cooldownPeriod: {{ .Values.workerService.autoscaling.cooldownSeconds }}
+  {{- end }}
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # Il predefinito di Kubernetes è cinque minuti di attesa prima di
+          # togliere una replica: una prudenza pensata per servizi che
+          # rispondono a richieste HTTP, dove spegnere troppo presto significa
+          # far aspettare qualcuno. Qui chi aspetta è una coda, e il lavoro non
+          # si perde: un worker di troppo è solo memoria che questo portatile
+          # non ha.
+          stabilizationWindowSeconds: {{ .Values.workerService.autoscaling.scaleDownWindowSeconds }}
+
+  triggers:
+    - type: rabbitmq
+      metadata:
+        # AMQP e non l'interfaccia di amministrazione: è la stessa porta e le
+        # stesse credenziali che usano i servizi, quindi niente da configurare
+        # in più e niente che possa divergere.
+        protocol: amqp
+        {{- if eq .Values.platform "aws" }}
+        # Amazon MQ parla solo AMQP su TLS, e KEDA vuole che glielo si dica:
+        # con un indirizzo amqps:// e senza questa riga la connessione fallisce
+        # e l'autoscaler resta cieco — le repliche non salirebbero mai.
+        tls: "enable"
+        {{- end }}
+        queueName: {{ .Values.app.jobQueue | quote }}
+        # QueueLength: messaggi in attesa. L'alternativa (MessageRate) misura
+        # quanti ne arrivano al secondo, che dice come sta andando ma non
+        # quanto lavoro è rimasto da fare.
+        mode: QueueLength
+        # Messaggi per replica. Con questo valore, {{ .Values.workerService.autoscaling.messagesPerReplica }} messaggi in coda
+        # chiedono una replica, il doppio ne chiedono due, e così via fino al
+        # tetto.
+        value: {{ .Values.workerService.autoscaling.messagesPerReplica | quote }}
+      authenticationRef:
+        name: rabbitmq-auth
+{{- end }}

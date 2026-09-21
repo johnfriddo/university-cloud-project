@@ -1,0 +1,83 @@
+# I valori del chart della porta d'ingresso (NGINX Ingress Controller di F5).
+#
+# Erano quindici opzioni `--set` sulla riga di comando, ripetute in due posti:
+# deploy/cluster/cluster.sh e il ruolo Ansible `addons`. Ora stanno qui, in un
+# file solo, e i due percorsi lo passano con `-f`.
+
+controller:
+  service:
+    # LoadBalancer chiederebbe un bilanciatore esterno, che una nuvola
+    # fornisce e Multipass no: aspetterebbe per sempre.
+    type: NodePort
+    # `Local` risponderebbe solo sul nodo che ospita il controller.
+    externalTrafficPolicy: Cluster
+    httpPort:
+      # La porta di servizio, per il collaudo. Non è quella da cui si entra.
+      nodePort: 30080
+    httpsPort:
+      # In locale non ci sono certificati.
+      enable: false
+
+  # Si entra dalla porta 80 del nodo, non da una porta sopra la 30000.
+  #
+  # Non è una preferenza. I link che il browser usa per caricare e scaricare i
+  # file sono firmati, e la firma copre il nome dell'host; NGINX però inoltra
+  # l'host a MinIO **senza la porta**. Un link firmato per
+  # "media-platform.test:30080" arriverebbe a MinIO annunciando
+  # "media-platform.test": firma diversa, richiesta rifiutata.
+  hostPort:
+    enable: true
+    http: 80
+
+  # hostPort apre la porta della macchina dove il pod gira, e il nome nel
+  # /etc/hosts del Mac ne indica una precisa: le due cose vanno legate.
+  nodeSelector:
+    kubernetes.io/hostname: media-w1
+
+  ingressClass:
+    setAsDefaultIngress: true
+
+  # Espone /nginx-health, che è come si verifica che la porta risponda.
+  healthStatus: true
+
+  # Con 8 GB in tutto, ogni componente ha un tetto.
+  resources:
+    requests:
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  config:
+    entries:
+      # --- L'esenzione dal limite di frequenza per le sorgenti interne ------
+      #
+      # Il limite sulle rotte di autenticazione serve a rendere lento chi tenta
+      # di indovinare una password. Ma la nostra suite di integrazione gira
+      # **dentro** il cluster e fa 61 richieste di autenticazione in 31
+      # secondi da un solo indirizzo — 118 al minuto, misurate. Un limite
+      # abbastanza stretto da servire la fermerebbe; uno che la lascia passare
+      # non proteggerebbe da niente.
+      #
+      # La via d'uscita è quella che si usa davvero: si esenta la rete interna.
+      # `geo` assegna 0 agli indirizzi dei pod e 1 a tutti gli altri; `map`
+      # traduce lo 0 in una **chiave vuota**, e NGINX non applica il limite a
+      # una chiave vuota. Il browser, che arriva dalla rete delle macchine
+      # virtuali, resta soggetto al limite.
+      #
+      # ATTENZIONE, e non era ovvio: perché l'esenzione funzioni, i test
+      # devono entrare **attraverso il Service** dell'ingresso, non attraverso
+      # la porta 80 del nodo. Un pod che raggiunge l'indirizzo di un nodo esce
+      # dal cluster e rientra, e per strada il suo indirizzo viene tradotto in
+      # quello del nodo: NGINX vedeva `client: 192.168.252.7`, cioè una
+      # macchina, non un pod, e il limite scattava lo stesso. Vedi il commento
+      # in deploy/cluster/app.sh, funzione test_suite.
+      http-snippets: |
+        geo $media_platform_external {
+            default        1;
+            10.244.0.0/16  0;
+            10.96.0.0/12   0;
+        }
+        map $media_platform_external $media_platform_ratelimit_key {
+            1  $binary_remote_addr;
+            0  "";
+        }

@@ -1,0 +1,88 @@
+{{- /* Solo in locale: su AWS al suo posto c'è un servizio gestito, fuori dal cluster. */ -}}
+{{- if eq .Values.platform "local" }}
+# MongoDB: i metadati EXIF, che hanno schema variabile a seconda del
+# dispositivo di scatto. Stesse ragioni dello StatefulSet di PostgreSQL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+  selector:
+    {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  serviceName: mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: mongo
+          image: {{ .Values.images.mongo }}
+          args:
+            # Senza questo, la cache di WiredTiger si dimensiona sulla memoria
+            # della *macchina* e non su quella concessa al pod: su un nodo da
+            # 1,4 GB chiederebbe centinaia di MB oltre il tetto, e il pod
+            # verrebbe ucciso per memoria appena la riempie.
+            - --wiredTigerCacheSizeGB
+            - {{ .Values.mongo.wiredTigerCacheGB | quote }}
+          ports:
+            - name: mongo
+              containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom: { secretKeyRef: { name: app-secrets, key: MONGO_USER } }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: MONGO_PASSWORD } }
+            - name: MONGO_INITDB_DATABASE
+              value: {{ .Values.app.mongoDatabase | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          resources:
+            {{- toYaml .Values.mongo.resources | nindent 12 }}
+          # Sonde sulla porta e non con `mongosh`: ogni esecuzione di mongosh
+          # avvia un interprete JavaScript che costa decine di MB, e ripeterla
+          # ogni dieci secondi dentro un tetto di {{ .Values.mongo.resources.limits.memory }}
+          # significa spendere in controlli la memoria che serve al database.
+          # Chi ha bisogno di sapere se il documentale risponde davvero — il
+          # worker — se lo chiede da sé nella propria readiness.
+          livenessProbe:
+            tcpSocket: { port: 27017 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket: { port: 27017 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.mongo.storage }}
+
+{{- end }}

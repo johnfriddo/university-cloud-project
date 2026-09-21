@@ -1,0 +1,79 @@
+# notification-service: ascolta gli eventi di fine elaborazione e registra un
+# avviso per il proprietario dell'immagine.
+#
+# Una sola replica, e non per risparmiare memoria: l'exchange è fanout, cioè
+# consegna una copia dell'evento a ogni coda legata. Le repliche condividono
+# la stessa coda, quindi un evento va a una sola di loro — ma la disciplina
+# dei doppioni resta affidata al vincolo di unicità sul database, non al
+# numero di repliche.
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  # Come il worker: senza indirizzo proprio e includendo i pod non pronti,
+  # perché serve a osservare la salute, non a smistare richieste.
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+  selector:
+    {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "notification-service") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  labels:
+    {{- include "media-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.notificationService.replicas }}
+  selector:
+    matchLabels:
+      {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "notification-service") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "media-platform.configChecksums" . | nindent 8 }}
+      labels:
+        {{- include "media-platform.labels" . | nindent 8 }}
+        {{- include "media-platform.selectorLabels" (dict "ctx" . "component" "notification-service") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: notification-service
+      {{- include "media-platform.nodeSelector" . | nindent 6 }}
+      containers:
+        - name: notification-service
+          image: {{ include "media-platform.image" (dict "ctx" . "service" "notification-service") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            {{- include "media-platform.envFrom" . | nindent 12 }}
+          env:
+            - name: SERVICE_NAME
+              value: notification-service
+            - name: SERVICE_VERSION
+              value: {{ .Chart.AppVersion | quote }}
+            - name: MAX_ATTEMPTS
+              value: {{ .Values.notificationService.maxAttempts | quote }}
+          resources:
+            {{- toYaml .Values.notificationService.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
