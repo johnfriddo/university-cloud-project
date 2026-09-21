@@ -1,0 +1,59 @@
+<div class="page stack">
+  <header class="head">
+    <h1>Avvisi</h1>
+    <p class="label">{{ total() }} messaggi</p>
+  </header>
+
+  <p class="note">
+    In locale non esiste un server di posta: il notification-service scrive il
+    messaggio nel suo log e qui. Nella versione su AWS lo stesso testo parte
+    anche via SNS e arriva nella casella dell'utente.
+  </p>
+
+  @if (error()) {
+    <p class="message" role="alert">
+      <span class="label">Errore</span>
+      {{ error() }}
+    </p>
+  }
+
+  @if (loading()) {
+    <p class="empty">Caricamento…</p>
+  } @else if (items().length === 0) {
+    <p class="empty">
+      Nessun avviso. Ne arriverà uno per ogni immagine che finisce di essere
+      elaborata.
+    </p>
+  } @else {
+    <ul class="messages">
+      @for (item of items(); track item.id) {
+        <li class="item">
+          <p class="line">
+            <span class="marker" aria-hidden="true">{{ marker(item) }}</span>
+            <span class="subject">{{ item.subject }}</span>
+            <span class="mono when">{{ item.created_at | date: 'dd/MM/yyyy HH:mm' }}</span>
+          </p>
+          <p class="body">{{ item.body }}</p>
+          <p class="line">
+            <a [routerLink]="['/immagini', item.asset_id]">Vai all'immagine</a>
+            @if (item.sent_at === null) {
+              <span class="pending">Registrato, mai consegnato al canale</span>
+            }
+          </p>
+        </li>
+      }
+    </ul>
+
+    @if (pages() > 1) {
+      <nav class="pager">
+        <button type="button" [disabled]="page() <= 1" (click)="load(page() - 1)">
+          Precedente
+        </button>
+        <span class="label">Pagina {{ page() }} di {{ pages() }}</span>
+        <button type="button" [disabled]="page() >= pages()" (click)="load(page() + 1)">
+          Successiva
+        </button>
+      </nav>
+    }
+  }
+</div>

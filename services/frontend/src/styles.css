@@ -1,0 +1,186 @@
+/* Foglio di stile globale.
+ *
+ * Bianco, nero, un carattere di sistema. Nessun colore: le distinzioni le fanno
+ * la tipografia e la forma. Nessun font scaricato da internet, perché
+ * l'applicazione deve funzionare anche in un cluster senza uscita sulla rete.
+ */
+
+:root {
+  --bg: #ffffff;
+  --ink: #000000;
+  --ink-soft: #555555;
+  --line: #000000;
+  --line-faint: rgba(0, 0, 0, 0.22);
+  --field: #ffffff;
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+}
+
+h2 {
+  font-size: 17px;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--ink);
+}
+
+/* --- Etichette in maiuscoletto, il marcatore tipografico ricorrente --- */
+.label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Per chi legge la pagina con uno screen reader, invisibile per gli altri. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --- Campi --- */
+label.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="date"],
+input[type="number"],
+select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 7px 9px;
+  width: 100%;
+}
+
+/* Il menù a tendina, altrimenti, se lo disegna il sistema operativo: angoli
+   arrotondati, sfumatura e freccia doppia, in mezzo a campi squadrati e neri.
+   Tolto l'aspetto nativo, la freccia va ridisegnata a mano. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--field);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%23000'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 9px 6px;
+  padding-right: 30px;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--line);
+  outline-offset: 2px;
+}
+
+/* --- Pulsanti: pieno per l'azione principale, contorno per le altre --- */
+button {
+  font: inherit;
+  font-weight: 500;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 7px 14px;
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+button.link {
+  border: 0;
+  padding: 0;
+  background: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 400;
+}
+
+/* --- Messaggi --- */
+.message {
+  border: 1px solid var(--line);
+  padding: 9px 11px;
+  font-size: 14px;
+}
+
+.message .label {
+  display: block;
+  margin-bottom: 2px;
+}
+
+/* --- Impaginazione --- */
+.stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.page {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 26px 22px 80px;
+}

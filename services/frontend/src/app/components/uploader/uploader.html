@@ -1,0 +1,63 @@
+<section class="uploader">
+  <label
+    class="drop"
+    [class.over]="dragging()"
+    (dragenter)="onDragEnter($event)"
+    (dragover)="onDragOver($event)"
+    (dragleave)="onDragLeave()"
+    (drop)="onDrop($event)"
+  >
+    <input type="file" multiple [accept]="accept" (change)="onSelect($event)" />
+    <span class="drop-title">Trascina qui le immagini, oppure scegli i file</span>
+    <span class="drop-note">JPEG, PNG o WebP, fino a {{ maxMegabytes }} MB ciascuna</span>
+  </label>
+
+  @if (items().length > 0) {
+    <div class="summary">
+      <p class="label">
+        {{ counts().done }} inviate · {{ counts().failed }} errori ·
+        {{ counts().running }} in corso
+      </p>
+      <button
+        type="button"
+        class="link"
+        (click)="clear()"
+        [disabled]="counts().done + counts().failed === 0"
+      >
+        Pulisci elenco
+      </button>
+    </div>
+
+    <ul class="items">
+      @for (item of items(); track item.id) {
+        <li class="item" [class.failed]="item.phase() === 'error'">
+          <span class="marker" aria-hidden="true">{{ marker(item) }}</span>
+          <span class="name">{{ item.file.name }}</span>
+          <span class="mono size">{{ size(item.file.size) }}</span>
+          <span class="mono phase">{{ wording(item) }}</span>
+          <span class="action">
+            @if (item.phase() === 'error') {
+              <button type="button" class="link" (click)="retry(item)">Riprova</button>
+            }
+          </span>
+
+          @if (item.phase() === 'sending') {
+            <span
+              class="bar"
+              role="progressbar"
+              [attr.aria-valuenow]="item.progress()"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span class="fill" [style.width.%]="item.progress()"></span>
+            </span>
+          }
+
+          @if (item.error(); as reason) {
+            <span class="reason">{{ reason }}</span>
+          }
+        </li>
+      }
+    </ul>
+  }
+</section>

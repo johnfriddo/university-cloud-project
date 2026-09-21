@@ -1,0 +1,126 @@
+.uploader {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* --- La zona di rilascio --- */
+.drop {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 26px 18px;
+  border: 1px dashed var(--line);
+  text-align: center;
+  cursor: pointer;
+}
+
+/* Tratteggio pieno mentre il file è sopra: la forma dice che il rilascio è
+   accettato, senza bisogno di un colore. */
+.drop.over {
+  border-style: solid;
+  border-width: 2px;
+  padding: 25px 17px;
+}
+
+/* Il campo resta raggiungibile da tastiera: nascosto alla vista, non al focus. */
+.drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.drop:has(input:focus-visible) {
+  outline: 2px solid var(--line);
+  outline-offset: 2px;
+}
+
+.drop-title {
+  font-weight: 500;
+}
+
+.drop-note {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+/* --- Riepilogo --- */
+.summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* --- Elenco dei file in corso --- */
+.items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  gap: 4px 10px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.marker {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.size,
+.phase {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.phase {
+  min-width: 11ch;
+  text-align: right;
+}
+
+.action {
+  min-width: 7ch;
+  text-align: right;
+}
+
+/* La barra e il motivo dell'errore occupano una riga propria sotto il nome. */
+.bar,
+.reason {
+  grid-column: 2 / -1;
+}
+
+.bar {
+  display: block;
+  height: 6px;
+  border: 1px solid var(--line-faint);
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+}
+
+.reason {
+  font-size: 13px;
+  color: var(--ink-soft);
+}

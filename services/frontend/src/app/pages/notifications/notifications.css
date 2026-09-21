@@ -1,0 +1,90 @@
+.stack {
+  gap: 18px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
+.note {
+  color: var(--ink-soft);
+  font-size: 13px;
+  max-width: 68ch;
+  border-left: 1px solid var(--line-faint);
+  padding-left: 10px;
+}
+
+.empty {
+  color: var(--ink-soft);
+  max-width: 56ch;
+}
+
+.messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.marker {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.subject {
+  font-weight: 500;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.when {
+  color: var(--ink-soft);
+}
+
+/* Il testo del messaggio è quello consegnato, a capo compresi. */
+.body {
+  white-space: pre-line;
+  color: var(--ink-soft);
+  max-width: 72ch;
+  padding-left: 22px;
+}
+
+.line:last-child {
+  padding-left: 22px;
+}
+
+.pending {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  border-top: 1px solid var(--line-faint);
+  padding-top: 16px;
+}

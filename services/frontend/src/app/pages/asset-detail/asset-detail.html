@@ -1,0 +1,147 @@
+<div class="page stack">
+  <button type="button" class="link back" (click)="back()">Torna alla libreria</button>
+
+  @if (error()) {
+    <p class="message" role="alert">
+      <span class="label">Errore</span>
+      {{ error() }}
+    </p>
+  }
+
+  @if (loading()) {
+    <p class="empty">Caricamento…</p>
+  } @else if (asset(); as asset) {
+    <header class="head">
+      <h1>{{ asset.filename }}</h1>
+      <p class="state">
+        <span class="marker" aria-hidden="true">{{ marker(asset) }}</span>
+        <span>{{ wording(asset) }}</span>
+        @if (asset.status === 'FAILED') {
+          <button type="button" class="link" [disabled]="retrying()" (click)="retry()">
+            Riprova
+          </button>
+        }
+        <!-- Ultima azione della riga, e staccata dalle altre: è l'unica che
+             non si può annullare. -->
+        <button type="button" class="link danger" [disabled]="deleting()" (click)="remove()">
+          {{ deleting() ? 'Elimino…' : 'Elimina' }}
+        </button>
+      </p>
+    </header>
+
+    @if (asset.error_message) {
+      <p class="message">
+        <span class="label">Motivo</span>
+        {{ asset.error_message }}
+      </p>
+    }
+
+    @if (preview(); as url) {
+      <figure class="preview">
+        <img [src]="url" [alt]="asset.filename" />
+      </figure>
+    } @else if (asset.status === 'FAILED') {
+      <p class="empty">
+        Nessuna anteprima: il file non è stato elaborato. Ricaricalo, oppure
+        rimettilo in coda con Riprova.
+      </p>
+    } @else {
+      <p class="empty">L'anteprima comparirà quando l'elaborazione sarà finita.</p>
+    }
+
+    <section class="block">
+      <h2>Versioni</h2>
+      @if (variants().length === 0) {
+        <p class="empty">Nessuna variante ancora prodotta.</p>
+      } @else {
+        <table>
+          <thead>
+            <tr>
+              <th class="label">Versione</th>
+              <th class="label">Dimensioni</th>
+              <th class="label">Peso</th>
+              <th class="label"><span class="visually-hidden">Collegamento</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (variant of variants(); track variant.kind) {
+              <tr>
+                <td>{{ labelOf(variant.kind) }}</td>
+                <td class="mono">{{ variant.width }} × {{ variant.height }} px</td>
+                <td class="mono">{{ size(variant.size_bytes) }}</td>
+                <td class="right">
+                  <a [href]="variant.download_url ?? variant.url">Scarica</a>
+                </td>
+              </tr>
+            }
+            @if (asset.original_url) {
+              <tr>
+                <td>Originale</td>
+                <td class="mono">
+                  @if (asset.metadata?.dimensions; as pixels) {
+                    {{ pixels.width }} × {{ pixels.height }} px
+                  } @else {
+                    —
+                  }
+                </td>
+                <td class="mono">{{ size(asset.size_bytes) }}</td>
+                <td class="right">
+                  <a [href]="asset.original_download_url ?? asset.original_url">Scarica</a>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      }
+    </section>
+
+    <section class="block">
+      <h2>Dati tecnici</h2>
+      @if (exif().length === 0) {
+        <p class="empty">
+          Il file non porta con sé metadati EXIF leggibili. È normale per
+          un'immagine scaricata dal web o modificata da un programma di
+          fotoritocco.
+        </p>
+      } @else {
+        <dl class="facts">
+          @for (row of exif(); track row.label) {
+            <div class="fact">
+              <dt class="label">{{ row.label }}</dt>
+              <dd class="mono">{{ row.value }}</dd>
+            </div>
+          }
+        </dl>
+      }
+    </section>
+
+    <section class="block">
+      <h2>Il file</h2>
+      <dl class="facts">
+        <div class="fact">
+          <dt class="label">Formato</dt>
+          <dd class="mono">{{ asset.mime }}</dd>
+        </div>
+        <div class="fact">
+          <dt class="label">Caricata il</dt>
+          <dd class="mono">{{ asset.created_at | date: 'dd/MM/yyyy HH:mm' }}</dd>
+        </div>
+        <div class="fact">
+          <dt class="label">Ultimo aggiornamento</dt>
+          <dd class="mono">{{ asset.updated_at | date: 'dd/MM/yyyy HH:mm' }}</dd>
+        </div>
+        @if (asset.metadata?.checksum; as checksum) {
+          <div class="fact wide">
+            <dt class="label">Impronta SHA-256</dt>
+            <dd class="mono break">{{ checksum }}</dd>
+          </div>
+        }
+      </dl>
+    </section>
+  } @else {
+    <p class="empty">
+      Immagine non trovata. Potrebbe essere stata rimossa.
+      <a routerLink="/libreria">Torna alla libreria</a>
+    </p>
+  }
+</div>

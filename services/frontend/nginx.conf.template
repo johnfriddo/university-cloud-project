@@ -1,0 +1,52 @@
+# Template, not a finished configuration: the nginx image fills in the ${...}
+# placeholders at startup from the environment (see the Dockerfile). Only the
+# names that exist as environment variables are replaced, so nginx's own
+# variables — $uri, $host, $scheme — pass through untouched.
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # SPA fallback: from phase 3 on, Angular handles the routing client-side.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Mirrors what the Ingress does in Kubernetes and the ALB on AWS: / to the
+    # frontend, /api to the api-service. Keeping the same origin in compose
+    # means no CORS setup here that would not exist in the cluster.
+    #
+    # In the cluster the Ingress routes /api straight to the api-service and
+    # this block is never reached, but the address of the resolver differs
+    # between the two worlds and a configuration that names Docker's own would
+    # be a Docker-only image deployed to Kubernetes.
+    location /api/ {
+        # The internal DNS, asked again every ten seconds. Its address is the
+        # one the container itself was given (/etc/resolv.conf): it differs in
+        # every environment, and on EKS Auto Mode there is no kube-dns Service
+        # to name at all.
+        #
+        # The name is resolved through a variable on purpose: with a literal
+        # address nginx resolves it once at startup and keeps that IP forever,
+        # so rebuilding the api-service leaves the proxy talking to a container
+        # that no longer exists — or, worse, to whichever one inherited its
+        # address.
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+        set $api_service ${API_UPSTREAM};
+
+        proxy_pass $api_service;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Liveness probe of the frontend container itself.
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+}

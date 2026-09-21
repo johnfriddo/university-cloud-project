@@ -1,0 +1,57 @@
+<main class="frame">
+  <section class="box stack">
+    <header class="stack">
+      <p class="label">Media Platform</p>
+      <h1>{{ mode() === 'accedi' ? 'Accedi' : 'Crea un account' }}</h1>
+    </header>
+
+    <form class="stack" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+      <label class="field">
+        <span class="label">Email</span>
+        <input type="email" formControlName="email" autocomplete="email" required>
+      </label>
+
+      <label class="field">
+        <span class="label">Password</span>
+        <input
+          type="password"
+          formControlName="password"
+          [autocomplete]="mode() === 'accedi' ? 'current-password' : 'new-password'"
+          required>
+        @if (mode() === 'registrati') {
+          <span class="hint">Almeno {{ minPasswordLength }} caratteri.</span>
+        }
+      </label>
+
+      @if (error()) {
+        <p class="message" role="alert">
+          <span class="label">Errore</span>
+          {{ error() }}
+        </p>
+      }
+
+      <button type="submit" class="primary" [disabled]="busy()">
+        {{ busy() ? 'Attendi' : (mode() === 'accedi' ? 'Accedi' : 'Registrati') }}
+      </button>
+    </form>
+
+    <footer>
+      @if (mode() === 'accedi') {
+        <span>Non hai un account?</span>
+        <button type="button" class="link" (click)="switchMode()">Registrati</button>
+      } @else {
+        <span>Hai già un account?</span>
+        <button type="button" class="link" (click)="switchMode()">Accedi</button>
+      }
+    </footer>
+  </section>
+
+  <p class="colophon">
+    <!-- Lo stesso segno che sta nell'icona della scheda: il marchio
+         dell'applicazione è quel quadrato, e conviene ripeterlo. -->
+    <svg class="mark" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" />
+    </svg>
+    <span>Media Platform · © 2026 Marco Gionfriddo</span>
+  </p>
+</main>

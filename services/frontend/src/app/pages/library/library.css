@@ -1,0 +1,150 @@
+.stack {
+  gap: 20px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
+.empty {
+  color: var(--ink-soft);
+  max-width: 52ch;
+}
+
+/* --- Filtri --- */
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--line-faint);
+  padding: 14px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.row .field {
+  flex: 1 1 170px;
+  min-width: 0;
+}
+
+.row .field.narrow {
+  flex: 0 1 110px;
+}
+
+details summary {
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+details[open] summary {
+  margin-bottom: 10px;
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* --- Griglia --- */
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
+  gap: 20px 16px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.preview {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.frame {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Il posto della miniatura che non c'è ancora: il marcatore, ingrandito. */
+.placeholder {
+  font-size: 20px;
+  color: var(--ink-soft);
+}
+
+.preview .name {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview:hover .name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.state {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.marker {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.date {
+  color: var(--ink-soft);
+}
+
+.reason {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+/* --- Paginazione --- */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  border-top: 1px solid var(--line-faint);
+  padding-top: 16px;
+}

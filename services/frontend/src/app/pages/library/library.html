@@ -1,0 +1,156 @@
+<div class="page stack">
+  <header class="head">
+    <h1>Libreria</h1>
+    <p class="label">
+      {{ total() }} immagini
+      @if (working() > 0 && !stalled()) {
+        · {{ working() }} in lavorazione, aggiornamento automatico
+      }
+    </p>
+  </header>
+
+  <app-uploader (finished)="reload()" />
+
+  <form class="filters" [formGroup]="form" (ngSubmit)="applyFilters()">
+    <div class="row">
+      <label class="field">
+        <span class="label">Nome</span>
+        <input type="text" formControlName="filename" placeholder="Parte del nome" />
+      </label>
+      <label class="field">
+        <span class="label">Stato</span>
+        <select formControlName="status">
+          <option value="">Tutti</option>
+          <option value="DONE">Pronte</option>
+          <option value="PROCESSING">In lavorazione</option>
+          <option value="PENDING">In attesa</option>
+          <option value="FAILED">Errore</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="label">Dal</span>
+        <input type="date" formControlName="from" />
+      </label>
+      <label class="field">
+        <span class="label">Al</span>
+        <input type="date" formControlName="to" />
+      </label>
+    </div>
+
+    <details [open]="technicalOpen()">
+      <summary class="label">Dati tecnici dello scatto</summary>
+      <div class="row">
+        <label class="field">
+          <span class="label">Fotocamera</span>
+          <input type="text" formControlName="camera" placeholder="Canon, NIKON…" />
+        </label>
+        <label class="field">
+          <span class="label">Obiettivo</span>
+          <input type="text" formControlName="lens" placeholder="EF 50mm…" />
+        </label>
+        <label class="field">
+          <span class="label">Focale</span>
+          <input type="text" formControlName="focal_length" placeholder="50" />
+        </label>
+        <label class="field narrow">
+          <span class="label">ISO da</span>
+          <input type="number" formControlName="iso_min" min="0" />
+        </label>
+        <label class="field narrow">
+          <span class="label">ISO a</span>
+          <input type="number" formControlName="iso_max" min="0" />
+        </label>
+      </div>
+    </details>
+
+    <div class="buttons">
+      <button type="submit" class="primary">Filtra</button>
+      @if (filtered()) {
+        <button type="button" class="link" (click)="reset()">Azzera i filtri</button>
+      }
+    </div>
+  </form>
+
+  @if (error()) {
+    <p class="message" role="alert">
+      <span class="label">Errore</span>
+      {{ error() }}
+    </p>
+  }
+
+  @if (truncated()) {
+    <p class="message">
+      <span class="label">Risultato parziale</span>
+      La ricerca sui dati tecnici ha raggiunto il numero massimo di
+      corrispondenze. Restringi i filtri per essere sicuro di vedere tutto.
+    </p>
+  }
+
+  @if (stalled()) {
+    <p class="message">
+      <span class="label">Aggiornamento automatico interrotto</span>
+      Nulla si è mosso per diversi minuti. Aggiorna l'elenco, oppure rimetti in
+      coda le immagini rimaste indietro.
+      <button type="button" class="link" (click)="load()">Aggiorna</button>
+    </p>
+  }
+
+  @if (loading()) {
+    <p class="empty">Caricamento…</p>
+  } @else if (assets().length === 0) {
+    <p class="empty">
+      @if (filtered()) {
+        Nessuna immagine corrisponde ai filtri.
+      } @else {
+        Nessuna immagine. Carica la prima qui sopra.
+      }
+    </p>
+  } @else {
+    <ul class="grid">
+      @for (asset of assets(); track asset.id) {
+        <li class="tile">
+          <a class="preview" [routerLink]="['/immagini', asset.id]">
+            <span class="frame">
+              @if (thumb(asset); as url) {
+                <img [src]="url" [alt]="asset.filename" loading="lazy" />
+              } @else {
+                <span class="marker placeholder" aria-hidden="true">{{ marker(asset) }}</span>
+              }
+            </span>
+            <span class="name">{{ asset.filename }}</span>
+          </a>
+          <p class="state">
+            <span class="marker" aria-hidden="true">{{ marker(asset) }}</span>
+            <span>{{ wording(asset) }}</span>
+            <span class="mono date">{{ asset.created_at | date: 'dd/MM/yy HH:mm' }}</span>
+          </p>
+          @if (asset.error_message) {
+            <p class="reason">{{ asset.error_message }}</p>
+          }
+          @if (canRetry(asset)) {
+            <button
+              type="button"
+              class="link"
+              [disabled]="retrying().has(asset.id)"
+              (click)="retry(asset)"
+            >
+              Riprova
+            </button>
+          }
+        </li>
+      }
+    </ul>
+
+    @if (pages() > 1) {
+      <nav class="pager">
+        <button type="button" [disabled]="page() <= 1" (click)="goTo(page() - 1)">
+          Precedente
+        </button>
+        <span class="label">Pagina {{ page() }} di {{ pages() }}</span>
+        <button type="button" [disabled]="page() >= pages()" (click)="goTo(page() + 1)">
+          Successiva
+        </button>
+      </nav>
+    }
+  }
+</div>

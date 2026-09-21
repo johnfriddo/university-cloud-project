@@ -1,0 +1,126 @@
+.stack {
+  gap: 20px;
+}
+
+.back {
+  align-self: flex-start;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
+.head h1 {
+  overflow-wrap: anywhere;
+}
+
+.state {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+/* L'unica azione che non si annulla: spinta a destra, lontana dalle altre,
+   perché non la si prema per sbaglio. Nessun colore — l'applicazione non ne
+   usa — ma il peso del carattere la distingue. */
+.state .danger {
+  margin-left: auto;
+  font-weight: 500;
+}
+
+.marker {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.empty {
+  color: var(--ink-soft);
+  max-width: 60ch;
+}
+
+/* --- Anteprima --- */
+.preview {
+  margin: 0;
+  border: 1px solid var(--line);
+  padding: 10px;
+  display: grid;
+  place-items: center;
+}
+
+.preview img {
+  display: block;
+  max-width: 100%;
+  /* Limitata in altezza: la pagina deve restare percorribile senza scorrere
+     un'immagine alta duemila pixel. */
+  max-height: 62vh;
+  width: auto;
+  height: auto;
+}
+
+/* --- Sezioni --- */
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* --- Tabella delle versioni --- */
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--line-faint);
+}
+
+th {
+  border-bottom: 1px solid var(--line);
+}
+
+td.right,
+th:last-child {
+  text-align: right;
+  padding-right: 0;
+}
+
+/* --- Coppie etichetta / valore --- */
+.facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px 20px;
+}
+
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  border-left: 1px solid var(--line-faint);
+  padding-left: 10px;
+}
+
+.fact.wide {
+  grid-column: 1 / -1;
+}
+
+.fact dd {
+  margin: 0;
+}
+
+.break {
+  overflow-wrap: anywhere;
+}

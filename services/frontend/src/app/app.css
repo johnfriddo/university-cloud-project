@@ -1,0 +1,43 @@
+.bar {
+  border-bottom: 1px solid var(--line);
+}
+
+.bar-inner {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 12px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  text-decoration: none;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.who a {
+  text-decoration: none;
+}
+
+.who a:hover,
+.who a.current {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Il numero degli avvisi nuovi: un riquadro pieno, come il marcatore di errore
+   nella libreria, così si nota senza ricorrere al colore. */
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  background: var(--ink);
+  color: var(--bg);
+}

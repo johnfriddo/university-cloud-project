@@ -1,0 +1,20 @@
+@if (auth.isAuthenticated()) {
+  <header class="bar">
+    <div class="bar-inner">
+      <a class="label brand" routerLink="/libreria">Media Platform</a>
+      <div class="who">
+        @if (auth.user(); as user) {
+          <span class="mono">{{ user.email }}</span>
+        }
+        <a routerLink="/avvisi" routerLinkActive="current">
+          Avvisi@if (notifications.unread() > 0) {
+            <span class="badge mono">{{ notifications.unread() }}</span>
+          }
+        </a>
+        <button type="button" class="link" (click)="logout()">Esci</button>
+      </div>
+    </div>
+  </header>
+}
+
+<router-outlet />
