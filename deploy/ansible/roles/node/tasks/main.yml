@@ -1,0 +1,234 @@
+# Prepara una macchina Ubuntu a diventare un nodo Kubernetes.
+#
+# È la traduzione di deploy/cluster/prepare-node.sh, che resta nella repo come
+# specifica leggibile. Ogni passo qui sotto è qualcosa che kubeadm controlla e
+# senza cui si rifiuta di procedere.
+#
+# La differenza rispetto allo script non è cosa fa, ma **quante volte lo fa**:
+# rilanciare questo ruolo su un nodo già pronto non tocca niente e non riavvia
+# nessun servizio. Lo script invece rifaceva tutto da capo ogni volta.
+---
+
+# --- 1. niente swap ---------------------------------------------------------
+
+- name: Spengo lo swap
+  # Il kubelet si rifiuta di partire con lo swap acceso: il suo conteggio della
+  # memoria dà per scontato che quello che un container usa sia davvero in RAM.
+  # Le immagini Multipass non hanno swap, ma un nodo non deve dipendere da
+  # questo.
+  ansible.builtin.command: swapoff -a
+  # Senza, il comando risulterebbe "cambiato" a ogni esecuzione anche quando
+  # non c'è niente da spegnere.
+  when: ansible_facts['swaptotal_mb'] | int > 0
+  changed_when: true
+
+- name: Tolgo lo swap da /etc/fstab
+  # Perché resti spento anche dopo un riavvio.
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '#\1'
+
+# --- 2. moduli del kernel e inoltro -----------------------------------------
+
+- name: Carico i moduli del kernel che servono a Kubernetes
+  # overlay: il filesystem con cui sono costruiti i container.
+  # br_netfilter: fa passare da iptables il traffico che attraversa i ponti
+  # virtuali fra i pod. Senza, i Service non funzionerebbero fra nodi diversi.
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    # Scrive anche in /etc/modules-load.d/, così il modulo torna dopo un riavvio.
+    persistent: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Imposto i parametri di rete del kernel
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "1"
+    sysctl_file: /etc/sysctl.d/kubernetes.conf
+    sysctl_set: true
+    reload: true
+  loop:
+    - net.bridge.bridge-nf-call-iptables
+    - net.bridge.bridge-nf-call-ip6tables
+    - net.ipv4.ip_forward
+
+# --- 3. il motore dei container: containerd ---------------------------------
+
+- name: Installo containerd e gli strumenti per i repository firmati
+  ansible.builtin.apt:
+    name:
+      - containerd
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gpg
+    state: present
+    update_cache: true
+    # Non riscarica l'elenco dei pacchetti se lo ha già fatto da poco: su tre
+    # macchine in fila sarebbero tre scaricamenti inutili.
+    cache_valid_time: 3600
+
+- name: Guardo se containerd ha già una configurazione
+  ansible.builtin.stat:
+    path: /etc/containerd/config.toml
+  register: containerd_config
+
+- name: Genero la configurazione predefinita di containerd
+  # Solo se non c'è: rigenerarla a ogni esecuzione cancellerebbe le due
+  # modifiche qui sotto, che verrebbero riapplicate subito dopo — e il nodo
+  # riavvierebbe containerd a ogni passaggio di Ansible, per niente.
+  ansible.builtin.shell: |
+    set -o pipefail
+    mkdir -p /etc/containerd
+    containerd config default > /etc/containerd/config.toml
+  args:
+    executable: /bin/bash
+  when: not containerd_config.stat.exists
+  changed_when: true
+
+- name: Faccio gestire i cgroup a systemd
+  # Il kubelet e containerd devono essere d'accordo su chi governa i cgroup —
+  # la funzione del kernel che mette un tetto a memoria e CPU di ogni
+  # container. Ubuntu usa systemd, e due gestori affiancati rendono il nodo
+  # instabile sotto pressione: esattamente la situazione in cui 8 GB ci mettono.
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: '^(\s*)SystemdCgroup = false'
+    replace: '\1SystemdCgroup = true'
+  notify: Riavvia containerd
+
+- name: Avvio containerd
+  ansible.builtin.systemd_service:
+    name: containerd
+    state: started
+    enabled: true
+
+# --- 4. kubelet, kubeadm, kubectl -------------------------------------------
+
+- name: Preparo la cartella delle chiavi dei repository
+  # Su un'Ubuntu appena installata non esiste, e get_url non crea le cartelle
+  # che gli mancano.
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Installo la chiave del repository di Kubernetes
+  # Dal repository ufficiale, bloccato su un ramo solo: i pacchetti di Ubuntu
+  # restano indietro, e un cluster con nodi a versioni diverse è un cluster che
+  # si sta cercando guai.
+  ansible.builtin.get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/{{ k8s_minor }}/deb/Release.key"
+    dest: /etc/apt/keyrings/kubernetes.asc
+    mode: "0644"
+    # La cartella non esiste su un'Ubuntu appena installata.
+    force: false
+  register: k8s_key
+
+- name: Aggiungo il repository di Kubernetes
+  # Nel formato deb822 (un file .sources con un campo per riga) e non nella
+  # vecchia riga unica: `apt_repository` è deprecato e sparirà da ansible-core
+  # 2.25.
+  ansible.builtin.deb822_repository:
+    name: kubernetes
+    types: [deb]
+    uris: "https://pkgs.k8s.io/core:/stable:/{{ k8s_minor }}/deb/"
+    # Un repository "piatto": non ha distribuzioni né componenti, tutti i
+    # pacchetti stanno nella radice. Si indica con una barra sola.
+    suites: "/"
+    signed_by: /etc/apt/keyrings/kubernetes.asc
+    enabled: true
+    state: present
+
+- name: Tolgo il vecchio elenco lasciato da prepare-node.sh
+  # Lo script scriveva kubernetes.list nel formato a riga unica. Lasciandolo,
+  # apt leggerebbe lo stesso repository due volte e lo direbbe a ogni
+  # aggiornamento.
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/kubernetes.list
+    state: absent
+
+- name: Installo kubelet, kubeadm e kubectl
+  ansible.builtin.apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: true
+
+- name: Blocco le versioni dei pacchetti di Kubernetes
+  # Un aggiornamento automatico non deve mai spostare un nodo solo su una
+  # versione diversa dagli altri.
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+# --- 5. l'immagine "pause", allineata ---------------------------------------
+
+- name: Chiedo a kubeadm quale immagine «pause» si aspetta
+  # È il container vuoto attorno a cui è costruito ogni pod. Quella predefinita
+  # di containerd è più vecchia, e la differenza produce un avviso a ogni avvio
+  # più un'immagine scaricata due volte.
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubeadm config images list | grep pause
+  args:
+    executable: /bin/bash
+  register: pause_image
+  changed_when: false
+
+- name: Allineo l'immagine «pause» di containerd
+  # Due espressioni perché la chiave ha cambiato nome fra containerd 1.x
+  # (`sandbox_image`) e 2.x (`sandbox`). Ubuntu 24.04 installa la 2.2, e la
+  # sostituzione scritta per la 1.x non aveva effetto **in silenzio**: lo
+  # script lo ha scoperto sul campo, e da lì la verifica qui sotto.
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+  loop:
+    - regexp: '^(\s*)sandbox_image = .*'
+      replace: '\1sandbox_image = "{{ pause_image.stdout }}"'
+    - regexp: "^(\\s*)sandbox = .*"
+      replace: "\\1sandbox = '{{ pause_image.stdout }}'"
+  loop_control:
+    label: "{{ item.regexp }}"
+  notify: Riavvia containerd
+
+- name: Rileggo la configurazione di containerd
+  ansible.builtin.slurp:
+    src: /etc/containerd/config.toml
+  register: containerd_toml
+
+- name: Verifico che le due modifiche siano davvero andate a segno
+  # Una sostituzione che non trova niente non fa niente e non lo dice. Se il
+  # formato del file cambia ancora, è qui che ce ne accorgiamo — non fra tre
+  # ore, guardando perché il nodo scarica due volte la stessa immagine.
+  ansible.builtin.assert:
+    that:
+      - pause_image.stdout in (containerd_toml.content | b64decode)
+      - "'SystemdCgroup = true' in (containerd_toml.content | b64decode)"
+    fail_msg: >-
+      la configurazione di containerd non è come ce l'aspettiamo:
+      formato inatteso, controllare /etc/containerd/config.toml
+    success_msg: "cgroup a systemd e immagine pause allineata a {{ pause_image.stdout }}"
+    quiet: true
+
+# --- 6. il kubelet ----------------------------------------------------------
+
+- name: Accendo il kubelet
+  # Entra e esce in continuazione finché non riceve una configurazione: è
+  # normale, e smette quando il nodo viene agganciato al cluster.
+  ansible.builtin.systemd_service:
+    name: kubelet
+    state: started
+    enabled: true

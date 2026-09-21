@@ -1,0 +1,83 @@
+# Valori condivisi da tutti i playbook.
+#
+# Sono le stesse versioni fissate in deploy/cluster/cluster.sh e
+# deploy/cluster/prepare-node.sh: finché la Fase 6 non è finita i due percorsi
+# convivono, e devono produrre lo stesso cluster. Quando gli script verranno
+# ritirati, questo resterà l'unico posto dove le versioni sono scritte.
+
+# --- Le macchine ------------------------------------------------------------
+
+ubuntu_release: "24.04"
+
+# La chiave del progetto, fuori dalla repo. La stessa che usa
+# deploy/cluster/cluster.sh: i due percorsi devono poter convivere.
+ssh_key_path: "~/.ssh/media-platform"
+# L'elenco delle impronte delle macchine, dedicato al progetto: queste
+# macchine cambiano chiave a ogni ricreazione, e sporcare quello personale con
+# voci che si contraddicono è un fastidio che dura.
+known_hosts_path: "~/.ssh/media-platform_known_hosts"
+
+# Dimensionate al minimo che kubeadm accetta: il portatile ha 8 GB in tutto, e
+# macOS con un editor aperto ne vuole circa 3. Misurato in
+# docs/registro-cluster.md.
+machines:
+  - name: media-cp
+    cpus: 2
+    memory: 2G
+    disk: 10G
+  - name: media-w1
+    cpus: 2
+    memory: 1536M
+    disk: 10G
+  - name: media-w2
+    cpus: 2
+    memory: 1536M
+    disk: 10G
+
+# --- Kubernetes -------------------------------------------------------------
+
+# Il ramo, non la versione esatta: i pacchetti di Kubernetes sono pubblicati
+# per ramo, e dentro il ramo si prende l'ultima correzione.
+#
+# 1.36 e non 1.37: al momento della scelta la 1.37 era alla sua prima uscita,
+# mentre la 1.36 aveva già mesi di correzioni alle spalle.
+k8s_minor: "v1.36"
+
+# La rete fra i pod. È il valore predefinito di Flannel: cambiarlo significa
+# cambiarlo in due posti, qui e nella configurazione di Flannel.
+pod_cidr: "10.244.0.0/16"
+
+# --- Componenti di contorno -------------------------------------------------
+
+flannel_version: "v0.28.9"
+metrics_server_version: "v0.9.0"
+local_path_version: "v0.0.37"
+helm_version: "v4.3.0"
+
+# Il controller di F5, non il progetto comunitario "ingress-nginx": quello è
+# stato ritirato e il suo repository archiviato a marzo 2026. Il chart 2.7.3
+# porta il controller 5.6.3. Vedi docs/registro-cluster.md.
+nginx_ingress_chart_version: "2.7.3"
+keda_chart_version: "2.20.2"
+
+# --- Come si entra ----------------------------------------------------------
+
+# La porta fissa che ogni nodo apre. Resta come via di servizio, ma non è
+# quella da cui si entra: vedi la nota sulla porta 80 più sotto.
+ingress_http_nodeport: 30080
+
+# L'applicazione si raggiunge sulla porta 80 di questo nodo, e il nome nel
+# /etc/hosts del Mac punta qui.
+#
+# La porta 80 non è una preferenza. I link che il browser usa per caricare e
+# scaricare i file sono firmati, e la firma copre il nome dell'host; NGINX però
+# inoltra l'host a MinIO **senza la porta**. Un link firmato per
+# "media-platform.test:30080" arriverebbe a MinIO annunciando
+# "media-platform.test", la firma non corrisponderebbe più, e ogni caricamento
+# e ogni scaricamento verrebbero rifiutati. Sulla 80 non c'è porta da perdere.
+ingress_node: "media-w1"
+
+# Il nome di dominio da cui si entra. Deve stare nel /etc/hosts del Mac,
+# puntato all'indirizzo del nodo qui sopra. Lo stesso valore sta nel chart
+# (ingress.host) e in deploy/terraform/local (var.ingress_host).
+ingress_host_name: "media-platform.test"

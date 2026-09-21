@@ -1,0 +1,74 @@
+# Accende il piano di controllo e installa la rete fra i pod.
+#
+# È la traduzione della parte centrale di `cluster.sh create`. Il punto
+# delicato è uno solo: `kubeadm init` **non è ripetibile**. Su un piano di
+# controllo già inizializzato fallisce, e forzarlo distruggerebbe il cluster.
+# Per questo ogni cosa qui sotto è preceduta da una domanda: «esiste già?».
+---
+
+- name: Guardo se il piano di controllo è già stato inizializzato
+  # admin.conf è il file che kubeadm scrive alla fine di init: se c'è, il
+  # cluster è nato. È la stessa domanda che si farebbe una persona.
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf
+
+- name: Inizializzo il piano di controllo
+  ansible.builtin.command:
+    cmd: >-
+      kubeadm init
+      --pod-network-cidr={{ pod_cidr }}
+      --apiserver-advertise-address={{ ansible_host }}
+      --node-name={{ inventory_hostname }}
+  when: not admin_conf.stat.exists
+  changed_when: true
+  # Su un portatile che ospita tre macchine virtuali, init può prendersi
+  # qualche minuto: scarica le immagini dei componenti di sistema e aspetta
+  # che etcd risponda.
+  timeout: 600
+
+- name: Preparo la cartella delle credenziali per l'utente
+  ansible.builtin.file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0755"
+
+- name: Consegno le credenziali di amministrazione all'utente
+  # kubectl gira **dentro** la macchina del piano di controllo: la sua versione
+  # combacia con quella del cluster, non c'è niente da installare sul Mac, e le
+  # credenziali di amministrazione non escono mai da qui.
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: true
+    owner: ubuntu
+    group: ubuntu
+    mode: "0600"
+
+- name: Aspetto che l'apiserver risponda
+  # Subito dopo init l'apiserver può ancora non accettare connessioni. Senza
+  # questa attesa, il comando qui sotto fallirebbe per un motivo che non è un
+  # errore ma solo fretta.
+  ansible.builtin.command: kubectl get --raw=/healthz
+  become: false
+  register: apiserver
+  until: apiserver.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Installo la rete fra i pod (Flannel {{ flannel_version }})
+  # Senza, i nodi restano «non pronti» per sempre: Kubernetes non porta una
+  # rete con sé, e senza rete i pod non possono parlarsi.
+  ansible.builtin.command:
+    cmd: >-
+      kubectl apply -f
+      https://github.com/flannel-io/flannel/releases/download/{{ flannel_version }}/kube-flannel.yml
+  become: false
+  register: flannel
+  # `kubectl apply` stampa «created» la prima volta, «configured» se ha dovuto
+  # modificare qualcosa e «unchanged» quando va tutto bene. Senza questa riga
+  # risulterebbe «cambiato» a ogni esecuzione.
+  changed_when: "'created' in flannel.stdout or 'configured' in flannel.stdout"

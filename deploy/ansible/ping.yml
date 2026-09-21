@@ -1,0 +1,44 @@
+# Il primo contatto: nessuna modifica, solo la prova che il canale funziona.
+#
+#   cd deploy/ansible && ansible-playbook ping.yml
+#
+# Serve a separare due categorie di guasto che altrimenti si confondono: "non
+# riesco a parlare con le macchine" e "il lavoro che faccio sulle macchine è
+# sbagliato". Prima di tradurre prepare-node.sh in ruoli, questo deve passare.
+---
+- name: Primo contatto con le macchine del cluster
+  hosts: cluster
+  # Spento apposta, e non è un dettaglio: la raccolta dei dati apre la
+  # connessione **prima** di qualunque task, quindi il controllo qui sotto non
+  # verrebbe mai eseguito e al suo posto si vedrebbe un errore SSH oscuro. Si
+  # raccoglie dopo, con un task esplicito.
+  gather_facts: false
+
+  tasks:
+    - name: Verifico che la macchina sia accesa
+      # L'inventario riporta "spenta" al posto dell'indirizzo quando Multipass
+      # dice che la macchina esiste ma non è in esecuzione. Fermarsi qui, con
+      # il nome della macchina, è più utile di un errore di connessione SSH
+      # scaduto dopo quindici secondi.
+      ansible.builtin.assert:
+        that: ansible_host != "spenta"
+        fail_msg: >-
+          {{ inventory_hostname }} è spenta:
+          lancia 'deploy/cluster/cluster.sh start'
+        quiet: true
+      delegate_to: localhost
+
+    - name: Raccolgo i dati della macchina
+      ansible.builtin.setup:
+
+    - name: Chiedo alla macchina come sta
+      ansible.builtin.ping:
+
+    - name: Riepilogo
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} ({{ ansible_host }}) —
+          {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }},
+          kernel {{ ansible_facts['kernel'] }},
+          {{ ansible_facts['processor_vcpus'] }} processori,
+          {{ ansible_facts['memtotal_mb'] }} MB di memoria

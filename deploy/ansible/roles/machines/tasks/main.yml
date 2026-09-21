@@ -1,0 +1,116 @@
+# Crea le tre macchine virtuali con Multipass e ci mette dentro la chiave del
+# progetto. Gira sul Mac, non sulle macchine: quando parte, non esistono.
+#
+# **Una nota onesta sul metodo.** Ansible è fatto per configurare macchine che
+# già ci sono, non per crearle: qui si limita a invocare Multipass, che è
+# un'azione imperativa e gli sta un po' stretta. Funziona, ed è la scelta che
+# il documento di progetto indica per la fase locale — ma in cloud questo pezzo
+# è mestiere di Terraform, che dichiara le macchine invece di lanciarle.
+---
+
+- name: Verifico che Multipass ci sia
+  ansible.builtin.command: multipass version
+  changed_when: false
+
+- name: Genero la chiave del progetto, se manca
+  # Una chiave dedicata, fuori dalla repo: quella personale non deve finire in
+  # macchine usa e getta, e queste vengono distrutte e ricreate spesso.
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -q
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - media-platform cluster
+      - -f
+      - "{{ ssh_key_path | expanduser }}"
+  args:
+    creates: "{{ ssh_key_path | expanduser }}"
+
+- name: Guardo quali macchine esistono già
+  ansible.builtin.command: multipass list --format json
+  changed_when: false
+  register: multipass_list
+
+- name: Metto in chiaro cosa c'è
+  ansible.builtin.set_fact:
+    existing_machines: >-
+      {{ (multipass_list.stdout | from_json)['list'] | map(attribute='name') | list }}
+
+- name: Creo le macchine che mancano
+  # `multipass launch` su un nome già preso fallisce, quindi si chiede prima.
+  ansible.builtin.command:
+    argv:
+      - multipass
+      - launch
+      - "{{ ubuntu_release }}"
+      - --name
+      - "{{ item.name }}"
+      - --cpus
+      - "{{ item.cpus }}"
+      - --memory
+      - "{{ item.memory }}"
+      - --disk
+      - "{{ item.disk }}"
+  loop: "{{ machines }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.cpus }} cpu, {{ item.memory }})"
+  when: item.name not in existing_machines
+  changed_when: true
+  # La prima macchina scarica l'immagine di Ubuntu: può volerci qualche minuto.
+  timeout: 900
+  register: launched
+
+- name: Accendo le macchine che fossero spente
+  ansible.builtin.command:
+    argv: [multipass, start, "{{ item.name }}"]
+  loop: "{{ machines }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name in existing_machines
+  changed_when: false
+
+- name: Dimentico le vecchie impronte delle macchine
+  # Macchine nuove riusano gli indirizzi delle vecchie con chiavi diverse: una
+  # voce rimasta le farebbe rifiutare da SSH come impostori. Si azzera solo
+  # quando qualcosa è stato davvero creato.
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ known_hosts_path | expanduser }}"
+    mode: "0600"
+  when: launched is changed
+
+- name: Consegno la chiave del progetto alle macchine
+  # Non con `multipass exec`, che su questo Mac si bloccava a caso restando a
+  # girare al 99% di CPU dentro la propria libreria SSH (vedi
+  # docs/registro-cluster.md). L'elenco delle chiavi autorizzate viene portato
+  # fuori, allungato e riportato dentro con `multipass transfer`.
+  ansible.builtin.command:
+    argv:
+      - "{{ role_path }}/files/install-key.sh"
+      - "{{ item.name }}"
+      - "{{ ssh_key_path | expanduser }}.pub"
+  loop: "{{ machines }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: key_install
+  changed_when: "'aggiunta' in key_install.stdout"
+
+- name: Rileggo l'inventario
+  # Le macchine appena create non erano nell'inventario quando il playbook è
+  # partito: senza questa riga, i play successivi non avrebbero nessun host su
+  # cui lavorare.
+  ansible.builtin.meta: refresh_inventory
+
+- name: Aspetto che le macchine rispondano via SSH
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[item]['ansible_host'] }}"
+    port: 22
+    timeout: 300
+    search_regex: OpenSSH
+  loop: "{{ machines | map(attribute='name') | list }}"
+  loop_control:
+    label: "{{ item }}"

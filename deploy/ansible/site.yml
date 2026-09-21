@@ -1,0 +1,161 @@
+# Il cluster locale, dall'inizio alla fine.
+#
+#   cd deploy/ansible
+#   ansible-playbook site.yml                  tutto
+#   ansible-playbook site.yml --tags node      solo la preparazione delle macchine
+#   ansible-playbook site.yml --tags cluster   solo kubeadm e l'aggancio dei nodi
+#   ansible-playbook site.yml --tags addons    solo dischi, ingresso, autoscaler
+#   ansible-playbook site.yml --diff           mostra cosa cambia, riga per riga
+#
+# Rilanciarlo su un cluster già in piedi non deve cambiare niente: è la prova
+# che l'automazione descrive uno stato e non una sequenza di azioni. Lo si
+# verifica guardando la riga finale di ogni macchina: `changed=0`.
+#
+# Quello che questo playbook **non** fa è installare l'applicazione: quella è
+# competenza di Terraform e Helm. La linea è netta — Ansible tocca le macchine,
+# Terraform tocca il cluster.
+---
+- name: Creo le macchine virtuali
+  # Gira sul Mac: quando parte, le macchine non esistono ancora. È anche
+  # l'unico play che non tocca nessun nodo.
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [machines]
+  roles:
+    - machines
+
+- name: Preparo le macchine a diventare nodi Kubernetes
+  hosts: cluster
+  # Spento apposta: la raccolta dei dati aprirebbe la connessione prima del
+  # controllo qui sotto, e al posto di un messaggio chiaro si vedrebbe un
+  # errore SSH scaduto. Si raccoglie subito dopo, con un task esplicito.
+  gather_facts: false
+  become: true
+  tags: [node]
+
+  pre_tasks:
+    - name: Verifico che la macchina sia accesa
+      ansible.builtin.assert:
+        that: ansible_host != "spenta"
+        fail_msg: >-
+          {{ inventory_hostname }} è spenta:
+          lancia 'deploy/cluster/cluster.sh start'
+        quiet: true
+      delegate_to: localhost
+      become: false
+
+    - name: Raccolgo i dati della macchina
+      ansible.builtin.setup:
+
+  roles:
+    - node
+
+- name: Accendo il piano di controllo
+  hosts: control_plane
+  become: true
+  tags: [cluster]
+  roles:
+    - control_plane
+
+- name: Aggancio gli operai al cluster
+  hosts: workers
+  become: true
+  tags: [cluster]
+  roles:
+    - worker
+
+- name: Aspetto che tutti i nodi siano pronti
+  hosts: control_plane
+  gather_facts: false
+  tags: [cluster]
+  tasks:
+    - name: Aspetto la condizione Ready su ogni nodo
+      # Un nodo appena agganciato resta «non pronto» finché Flannel non gli ha
+      # dato una rete. È questione di secondi, ma chi lancia il playbook deve
+      # poter contare sul fatto che alla fine il cluster sia utilizzabile.
+      ansible.builtin.command: kubectl wait --for=condition=Ready node --all --timeout=300s
+      changed_when: false
+
+- name: Installo i componenti di contorno
+  hosts: control_plane
+  gather_facts: false
+  # Non `become` a livello di play: kubectl e helm girano come l'utente
+  # normale, che ha le credenziali in ~/.kube/config. Solo l'installazione di
+  # Helm, che scrive in /usr/local/bin, chiede i permessi di root, e se li
+  # prende da sé.
+  tags: [addons]
+  roles:
+    - addons
+
+- name: Consegno le credenziali del cluster al Mac
+  hosts: control_plane
+  gather_facts: false
+  tags: [kubeconfig]
+  tasks:
+    - name: Copio le credenziali sul Mac
+      # Il passaggio di consegne fra Ansible e Terraform. Da qui in poi il
+      # cluster esiste, e chi lo usa dall'esterno — Terraform, e volendo un
+      # kubectl sul Mac — ha bisogno di credenziali.
+      #
+      # Non finiscono nella repo: vivono accanto alla chiave SSH del progetto,
+      # fuori da git, e .gitignore esclude comunque questi nomi.
+      #
+      # L'indirizzo dentro il file è già quello giusto: kubeadm ci scrive
+      # l'indirizzo annunciato dall'apiserver, che è l'IP della macchina, e il
+      # Mac lo raggiunge.
+      ansible.builtin.fetch:
+        src: /home/ubuntu/.kube/config
+        dest: "~/.kube/media-platform.conf"
+        flat: true
+        mode: "0600"
+
+- name: Riepilogo
+  hosts: control_plane
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Chiedo lo stato dei nodi
+      ansible.builtin.command: kubectl get nodes -o wide
+      changed_when: false
+      register: nodes
+
+    - name: Mostro il cluster
+      ansible.builtin.debug:
+        msg: "{{ nodes.stdout_lines }}"
+
+    - name: Guardo l'indirizzo del nodo che ospita l'ingresso
+      ansible.builtin.set_fact:
+        ingress_ip: "{{ hostvars[ingress_node]['ansible_host'] }}"
+
+    - name: Leggo il /etc/hosts del Mac
+      # Multipass riassegna gli indirizzi a ogni ricreazione, quindi dopo un
+      # `destroy` il nome punta quasi sempre alla macchina sbagliata. Non è un
+      # guasto del cluster, ma se ne accorge solo chi prova ad aprire la
+      # pagina — ed è il momento peggiore per scoprirlo.
+      ansible.builtin.command: grep -E "\s{{ ingress_host_name }}$" /etc/hosts
+      delegate_to: localhost
+      become: false
+      register: hosts_line
+      changed_when: false
+      failed_when: false
+
+    - name: Avverto se il nome punta altrove
+      ansible.builtin.debug:
+        msg: >-
+          {% if hosts_line.stdout.startswith(ingress_ip + ' ') or (' ' + ingress_ip + ' ') in hosts_line.stdout %}
+          Il /etc/hosts è già giusto: {{ ingress_host_name }} → {{ ingress_ip }}
+          {% else %}
+          ATTENZIONE — {{ ingress_host_name }} non punta a {{ ingress_ip }}.
+          Riga attuale: «{{ hosts_line.stdout | default('nessuna', true) }}».
+          Serve, con i permessi di amministratore:
+          sudo sed -i '' '/{{ ingress_host_name }}/d' /etc/hosts &&
+          echo '{{ ingress_ip }}  {{ ingress_host_name }}' | sudo tee -a /etc/hosts
+          {% endif %}
+
+    - name: Come si prosegue
+      ansible.builtin.debug:
+        msg:
+          - "Cluster pronto. Credenziali sul Mac: ~/.kube/media-platform.conf"
+          - "L'applicazione la installa Terraform:"
+          - "  cd deploy/terraform/local && terraform init && terraform apply"

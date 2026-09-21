@@ -1,0 +1,40 @@
+# Aggancia un operaio al cluster.
+#
+# Stessa disciplina del piano di controllo: `kubeadm join` non è ripetibile, e
+# su un nodo già agganciato fallisce. Si chiede prima se serve.
+---
+
+- name: Guardo se l'operaio è già agganciato
+  # kubelet.conf è il file che kubeadm scrive quando l'aggancio è riuscito:
+  # contiene le credenziali con cui questo nodo si presenta al cluster.
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Chiedo al piano di controllo un comando di aggancio
+  # Il comando contiene un gettone temporaneo, che scade dopo 24 ore: non si
+  # può conservare, va chiesto al momento.
+  #
+  # `run_once` lo chiede una volta sola e il risultato vale per tutti gli
+  # operai — un gettone serve per entrambi. La condizione guarda **tutti** gli
+  # operai e non solo il primo: se il primo fosse già agganciato e il secondo
+  # no, chiedere solo per il primo lascerebbe il secondo senza gettone.
+  ansible.builtin.command: kubeadm token create --print-join-command
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  run_once: true
+  register: join_command
+  changed_when: false
+  when: >-
+    false in (ansible_play_hosts
+              | map('extract', hostvars, ['kubelet_conf', 'stat', 'exists'])
+              | list)
+
+- name: Aggancio l'operaio al cluster
+  # --node-name: senza, il nodo si presenta con il proprio hostname. Qui
+  # combaciano, ma dipendere da quella coincidenza significa che un giorno
+  # smetterà di essere vera.
+  ansible.builtin.command:
+    cmd: "{{ join_command.stdout }} --node-name={{ inventory_hostname }}"
+  when: not kubelet_conf.stat.exists
+  changed_when: true
+  timeout: 300

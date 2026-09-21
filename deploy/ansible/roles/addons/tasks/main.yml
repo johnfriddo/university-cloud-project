@@ -1,0 +1,288 @@
+# I componenti di contorno: dischi, misuratore dei consumi, Helm, la porta
+# d'ingresso e l'autoscaler.
+#
+# Traduce `cluster.sh addons`, `cluster.sh ingress` e `cluster.sh keda`. Gira
+# tutto sul piano di controllo, che è dove `kubectl` e `helm` vivono.
+#
+# Ogni passo guarda prima com'è il cluster. Non è pignoleria: una delle patch
+# dello script, rilanciata due volte, **aggiungerebbe due volte la stessa
+# opzione** a metrics-server. Vedi più sotto.
+#
+# Nota sulla forma dei comandi: dove ci sono virgolette o barre rovesciate si
+# usa `argv`, cioè l'elenco degli argomenti già separati. La forma a stringa
+# unica li fa passare da un'analisi che **toglie le virgolette**, e un JSON
+# senza virgolette non è un JSON.
+---
+
+# --- I dischi ---------------------------------------------------------------
+
+- name: Installo il gestore dei dischi (local-path {{ local_path_version }})
+  # kubeadm non porta nessun sistema di dischi: un database che ne chiedesse
+  # uno aspetterebbe per sempre. Questo risponde a quelle richieste con una
+  # cartella sul nodo dove gira il pod — spartano, ma basta per un laboratorio.
+  ansible.builtin.command:
+    cmd: >-
+      kubectl apply -f
+      https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_version }}/deploy/local-path-storage.yaml
+  register: local_path
+  changed_when: "'created' in local_path.stdout or 'configured' in local_path.stdout"
+
+- name: Guardo se local-path è già la classe predefinita
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - storageclass
+      - local-path
+      - -o
+      # I punti dentro il nome dell'annotazione vanno protetti, altrimenti
+      # jsonpath li legge come separatori fra campi annidati.
+      - jsonpath={.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}
+  register: default_class
+  changed_when: false
+
+- name: Rendo local-path la classe predefinita
+  # Così il chart può chiedere «un disco» senza nominare chi lo fornisce, e lo
+  # stesso chart funzionerà su AWS con EBS dietro.
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - storageclass
+      - local-path
+      - -p
+      - '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+  when: default_class.stdout != "true"
+  changed_when: true
+
+# --- Il misuratore dei consumi ----------------------------------------------
+
+- name: Guardo quale metrics-server è già installato
+  # Serve a non riapplicare il manifesto ogni volta, e il motivo è una
+  # trappola che vale la pena conoscere.
+  #
+  # `kubectl apply` non si limita ad aggiungere: riporta la risorsa a quello
+  # che dice il manifesto, e quindi **cancella** l'elenco delle opzioni con cui
+  # gira metrics-server — compresa quella che il task più sotto gli aggiunge.
+  # Applicare e poi correggere a ogni esecuzione significa ridistribuire
+  # metrics-server ogni volta, per rimetterlo esattamente com'era.
+  #
+  # Il manifesto è bloccato su una versione: riapplicarlo non serve a niente
+  # finché quella versione non cambia. Qui si guarda l'immagine in uso.
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - kube-system
+      - get
+      - deployment
+      - metrics-server
+      - -o
+      - jsonpath={.spec.template.spec.containers[0].image}
+  register: metrics_image
+  failed_when: false
+  changed_when: false
+
+- name: Installo il misuratore dei consumi (metrics-server {{ metrics_server_version }})
+  ansible.builtin.command:
+    cmd: >-
+      kubectl apply -f
+      https://github.com/kubernetes-sigs/metrics-server/releases/download/{{ metrics_server_version }}/components.yaml
+  when: metrics_server_version not in (metrics_image.stdout | default(''))
+  changed_when: true
+
+- name: Guardo con quali opzioni gira metrics-server
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - kube-system
+      - get
+      - deployment
+      - metrics-server
+      - -o
+      - jsonpath={.spec.template.spec.containers[0].args}
+  register: metrics_args
+  changed_when: false
+
+- name: Dico a metrics-server di non verificare i certificati dei kubelet
+  # kubeadm dà a ogni kubelet un certificato autofirmato che metrics-server non
+  # sa verificare. Saltare quel controllo è la scelta abituale per un cluster
+  # di laboratorio su rete privata; l'alternativa — certificati firmati dal
+  # cluster e approvati a mano, di nuovo a ogni rinnovo — qui non comprerebbe
+  # niente.
+  #
+  # **La condizione è il punto.** Questa patch *aggiunge* una voce all'elenco
+  # delle opzioni: lanciata due volte, l'opzione comparirebbe due volte. Lo
+  # script la lanciava sempre.
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - -n
+      - kube-system
+      - patch
+      - deployment
+      - metrics-server
+      - --type=json
+      - -p
+      - '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+  when: "'--kubelet-insecure-tls' not in metrics_args.stdout"
+  changed_when: true
+
+- name: Aspetto che dischi e misuratore siano in piedi
+  ansible.builtin.command:
+    cmd: "kubectl -n {{ item.namespace }} rollout status deployment/{{ item.name }} --timeout=180s"
+  loop:
+    - { namespace: local-path-storage, name: local-path-provisioner }
+    - { namespace: kube-system, name: metrics-server }
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
+# --- Helm -------------------------------------------------------------------
+
+- name: Guardo se Helm è già installato, e a che versione
+  ansible.builtin.command: helm version --short
+  register: helm_installed_version
+  changed_when: false
+  failed_when: false
+
+- name: Installo Helm {{ helm_version }}
+  # L'impronta viene verificata **prima** di installare: un file alterato lungo
+  # la strada finirebbe altrimenti a girare come root.
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd /tmp
+    curl -fsSL -o helm.tgz "https://get.helm.sh/helm-{{ helm_version }}-linux-arm64.tar.gz"
+    curl -fsSL -o helm.tgz.sha256sum "https://get.helm.sh/helm-{{ helm_version }}-linux-arm64.tar.gz.sha256sum"
+    echo "$(cut -d' ' -f1 helm.tgz.sha256sum)  helm.tgz" | sha256sum -c -
+    tar -xzf helm.tgz linux-arm64/helm
+    install -m 0755 linux-arm64/helm /usr/local/bin/helm
+    rm -rf helm.tgz* linux-arm64
+  args:
+    executable: /bin/bash
+  become: true
+  when: not helm_installed_version.stdout.startswith(helm_version + "+")
+  changed_when: true
+
+- name: Guardo quali release Helm ci sono già
+  # Serve a non reinstallare quello che c'è. `helm upgrade --install` sarebbe
+  # di per sé ripetibile senza danni, ma ogni esecuzione conta come una nuova
+  # revisione e risulterebbe «cambiato» per sempre: il playbook non potrebbe
+  # più dire «non ho toccato niente».
+  ansible.builtin.command: helm list --all-namespaces --output json
+  register: helm_list
+  changed_when: false
+
+- name: Metto in chiaro cosa è già installato
+  ansible.builtin.set_fact:
+    helm_releases: "{{ helm_list.stdout | from_json | items2dict(key_name='name', value_name='chart') }}"
+
+# --- La porta d'ingresso ----------------------------------------------------
+
+- name: Consegno i valori della porta d'ingresso
+  # Tutti i valori che differiscono dai predefiniti del chart stanno in un file
+  # solo, con accanto il motivo di ognuno. Erano quindici opzioni `--set`
+  # ripetute qui e in deploy/cluster/cluster.sh.
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../cluster/nginx-ingress-values.yaml"
+    dest: /tmp/nginx-ingress-values.yaml
+    mode: "0644"
+  register: ingress_values
+
+- name: Installo la porta d'ingresso (NGINX Ingress Controller {{ nginx_ingress_chart_version }})
+  # Il controller di F5, non il progetto comunitario «ingress-nginx»: quello è
+  # stato ritirato e archiviato a marzo 2026.
+  ansible.builtin.command:
+    argv:
+      - helm
+      - upgrade
+      - --install
+      - nginx-ingress
+      - oci://ghcr.io/nginx/charts/nginx-ingress
+      - --version
+      - "{{ nginx_ingress_chart_version }}"
+      - --namespace
+      - nginx-ingress
+      - --create-namespace
+      - --values
+      - /tmp/nginx-ingress-values.yaml
+      - --wait
+      - --timeout
+      - 5m
+  # Si reinstalla anche quando cambiano i valori, non solo la versione del
+  # chart: altrimenti una modifica al file resterebbe senza effetto.
+  when: >-
+    helm_releases['nginx-ingress'] | default('')
+    != 'nginx-ingress-' ~ nginx_ingress_chart_version
+    or ingress_values is changed
+  changed_when: true
+
+# --- L'autoscaler a eventi --------------------------------------------------
+
+- name: Installo l'autoscaler a eventi (KEDA {{ keda_chart_version }})
+  # Kubernetes da solo scala su CPU e memoria, e qui nessuna delle due dice
+  # niente: un worker in attesa di un messaggio non consuma processore, e
+  # quando comincerebbe il carico è già arrivato tutto. KEDA porta la misura
+  # che conta — quanti messaggi aspettano — al normale autoscaler.
+  #
+  # Dal repository di KEDA come indirizzo diretto e non con `helm repo add`:
+  # non c'è niente da registrare dentro la macchina, e la versione si legge
+  # nel comando che la installa.
+  ansible.builtin.command:
+    argv:
+      - helm
+      - upgrade
+      - --install
+      - keda
+      - "https://kedacore.github.io/charts/keda-{{ keda_chart_version }}.tgz"
+      - --namespace
+      - keda
+      - --create-namespace
+      - --set
+      - resources.operator.requests.memory=64Mi
+      - --set
+      - resources.operator.limits.memory=192Mi
+      - --set
+      - resources.metricServer.requests.memory=48Mi
+      - --set
+      - resources.metricServer.limits.memory=128Mi
+      - --set
+      - resources.webhooks.requests.memory=32Mi
+      - --set
+      - resources.webhooks.limits.memory=96Mi
+      - --wait
+      - --timeout
+      - 5m
+  when: helm_releases['keda'] | default('') != 'keda-' ~ keda_chart_version
+  changed_when: true
+
+# --- Le verifiche -----------------------------------------------------------
+
+- name: Verifico che la porta 80 del nodo d'ingresso risponda
+  ansible.builtin.uri:
+    url: "http://localhost/nginx-health"
+    status_code: 200
+  delegate_to: "{{ ingress_node }}"
+  register: ingress_health
+  until: ingress_health.status == 200
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Verifico che KEDA sappia rispondere
+  # È la parte che deve funzionare: senza, l'autoscaler fa una domanda a cui
+  # non risponde nessuno, e il numero di repliche non si muove mai.
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - apiservice
+      - v1beta1.external.metrics.k8s.io
+      - -o
+      - jsonpath={.status.conditions[0].status}
+  register: keda_api
+  until: keda_api.stdout == "True"
+  retries: 12
+  delay: 5
+  changed_when: false

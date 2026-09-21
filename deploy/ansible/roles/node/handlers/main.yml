@@ -1,0 +1,11 @@
+# I riavvii, raccolti qui.
+#
+# Un handler parte solo se qualcuno lo ha chiamato (`notify`), e **una volta
+# sola** anche se lo chiamano in tre. È la differenza con lo script: là
+# containerd veniva riavviato due volte a ogni esecuzione, anche quando la sua
+# configurazione era già giusta.
+---
+- name: Riavvia containerd
+  ansible.builtin.systemd_service:
+    name: containerd
+    state: restarted
