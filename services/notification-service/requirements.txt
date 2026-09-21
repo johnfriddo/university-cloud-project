@@ -1,0 +1,3 @@
+# pika non compare qui: arriva dal pacchetto condiviso media-common,
+# che possiede gli adapter verso storage e broker.
+psycopg[binary]~=3.2
