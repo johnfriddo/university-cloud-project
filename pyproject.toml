@@ -1,0 +1,51 @@
+# Configurazione degli strumenti di sviluppo, per tutta la repo.
+#
+# Non descrive un pacchetto da installare: i servizi restano applicazioni a sé,
+# ognuna con il proprio requirements.txt. Qui vivono solo le impostazioni di
+# pytest e di ruff, che devono valere uguali ovunque.
+
+[tool.pytest.ini_options]
+testpaths = ["services", "tests"]
+
+# Importazione moderna dei moduli di test: senza questa, due file con lo stesso
+# nome in servizi diversi (per esempio due "test_config.py") si darebbero
+# fastidio a vicenda.
+addopts = "-q --strict-markers --import-mode=importlib"
+
+# Il primo elemento, `.*`, è il predefinito di pytest, che va ripetuto: questa
+# impostazione **sostituisce** l'elenco standard invece di aggiungersi, e
+# ometterlo significava frugare dentro ogni cartella nascosta.
+#
+# Non è teoria: montando i test nel cluster come ConfigMap, Kubernetes affianca
+# ai file due cartelle nascoste con lo stesso contenuto, e la suite risultava
+# eseguita **tre volte** — 162 test invece di 54, tutti verdi e tutti tranne
+# un terzo inutili.
+norecursedirs = [".*", "node_modules", "dist", ".angular", "*.egg-info"]
+
+# Ogni test dichiara di che tipo è. "--strict-markers" fa fallire subito un
+# marcatore scritto male, invece di eseguire silenziosamente tutto.
+markers = [
+    "unit: non tocca nulla fuori dal processo: niente rete, niente database",
+    "integration: richiede lo stack di prova acceso",
+    "slow: provoca guasti veri spegnendo container, e dura minuti",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Il frontend non è Python, e le dipendenze installate non sono roba nostra.
+exclude = ["services/frontend", "**/node_modules"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # errori di stile del linguaggio
+    "F",   # errori veri: nomi non definiti, import inutilizzati
+    "I",   # ordine degli import
+    "B",   # trappole comuni (argomenti mutabili di default, e simili)
+    "UP",  # costrutti superati, dato che il minimo è Python 3.12
+]
+
+[tool.ruff.lint.isort]
+# I nostri moduli: ruff li mette in un blocco a sé, dopo le librerie esterne,
+# come già fa il codice dei servizi.
+known-first-party = ["app", "worker", "notifier", "media_common"]

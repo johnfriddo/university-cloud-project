@@ -1,0 +1,32 @@
+# Immagine per eseguire i test.
+#
+# Contiene le librerie di tutti e tre i servizi Python, più pytest e ruff. Il
+# codice non viene copiato dentro: arriva montato all'avvio, così modificare un
+# test non richiede di ricostruire l'immagine. In CI il codice arriva dal
+# checkout ed è montato allo stesso identico modo.
+#
+# Contesto di build: services/, come per gli altri servizi.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /repo
+
+# Gli adapter condivisi, con il driver del documentale: i test del worker ne
+# hanno bisogno.
+COPY common/ /tmp/common/
+RUN pip install --no-cache-dir "/tmp/common[mongo]"
+
+# Le dipendenze dei tre servizi, nelle stesse versioni che girano in produzione:
+# un test che passasse contro una versione diversa proverebbe poco.
+COPY api-service/requirements.txt /tmp/api.txt
+COPY worker-service/requirements.txt /tmp/worker.txt
+COPY notification-service/requirements.txt /tmp/notifier.txt
+RUN pip install --no-cache-dir -r /tmp/api.txt -r /tmp/worker.txt -r /tmp/notifier.txt
+
+# Gli strumenti di prova. Restano qui e non nelle immagini dei servizi: quelle
+# devono contenere solo ciò che serve a funzionare.
+RUN pip install --no-cache-dir "pytest~=8.3" "ruff~=0.8"
+
+CMD ["pytest"]

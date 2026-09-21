@@ -1,0 +1,245 @@
+name: media-platform
+
+# Ambiente di sviluppo rapido: gli stessi container che in Fase 5 diventano pod
+# sul cluster Multipass. Le variabili arrivano da .env (vedi .env.example).
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  MONGO_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/${MONGO_DATABASE}?authSource=admin
+  MONGO_DATABASE: ${MONGO_DATABASE}
+  RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+  S3_ENDPOINT_INTERNAL: http://minio:9000
+  S3_ENDPOINT_PUBLIC: ${S3_ENDPOINT_PUBLIC}
+  S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+  S3_REGION: us-east-1
+  S3_BUCKET_ORIGINALS: originals
+  S3_BUCKET_DERIVED: derived
+  # MinIO indirizza endpoint/bucket/chiave; su AWS diventerà "virtual".
+  S3_ADDRESSING_STYLE: path
+  JWT_SECRET: ${JWT_SECRET}
+
+services:
+  # --- Infrastruttura --------------------------------------------------------
+
+  postgres:
+    image: postgres:16-alpine
+    # Come i servizi applicativi. Con criteri diversi, alla riaccensione di
+    # Docker i servizi ripartivano da soli e i database no: i consumatori si
+    # trovavano senza broker. Docker, a differenza di compose, non rispetta
+    # depends_on quando rimette in piedi i container per conto suo.
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE}
+    ports:
+      - "${MONGO_PORT}:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  minio:
+    # Versione fissata e presa da quay.io, non `minio/minio:latest` da Docker
+    # Hub: quel nome oggi risponde «repository does not exist or may require
+    # authorization», e questa è l'ultima uscita comunitaria.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # L'upload parte dal browser: senza CORS la richiesta PUT firmata viene
+      # bloccata prima ancora di raggiungere MinIO.
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Crea i bucket e termina. In AWS lo stesso compito è di Terraform.
+  #
+  # Usa l'immagine dell'api-service e non il client `mc`: è lo stesso comando
+  # che in Fase 5 diventa un Job di Kubernetes, e un'immagine in meno da
+  # scaricare su un cluster che le immagini se le porta a mano.
+  minio-init:
+    build:
+      context: ../../services
+      dockerfile: api-service/Dockerfile
+    command: ["python", "-m", "app.buckets"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      SERVICE_NAME: minio-init
+    restart: "no"
+
+  # --- Servizi applicativi ---------------------------------------------------
+
+  # Applica le migrazioni e termina. Gira una volta sola, prima dei servizi:
+  # in Fase 5 lo stesso comando diventa un Job di Kubernetes.
+  db-migrate:
+    build:
+      # Contesto services/: l'immagine include anche media-common.
+      context: ../../services
+      dockerfile: api-service/Dockerfile
+    command: ["python", "-m", "app.migrate"]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: db-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api-service:
+    build:
+      # Contesto services/: l'immagine include anche media-common.
+      context: ../../services
+      dockerfile: api-service/Dockerfile
+    environment:
+      <<: *app-env
+      SERVICE_NAME: api-service
+    ports:
+      - "${API_PORT}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/live')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  worker-service:
+    build:
+      # Contesto services/: l'immagine include anche media-common.
+      context: ../../services
+      dockerfile: worker-service/Dockerfile
+    environment:
+      <<: *app-env
+      SERVICE_NAME: worker-service
+      JOB_QUEUE: media.process
+      PREFETCH_COUNT: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      # Contesto services/: l'immagine include anche media-common.
+      context: ../../services
+      dockerfile: notification-service/Dockerfile
+    environment:
+      <<: *app-env
+      SERVICE_NAME: notification-service
+      EVENTS_EXCHANGE: media.events
+      NOTIFICATIONS_QUEUE: notifications
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../../services/frontend
+    ports:
+      - "${FRONTEND_PORT}:8080"
+    depends_on:
+      - api-service
+    # Nginx espone /healthz apposta: era l'unico servizio applicativo senza
+    # controllo di salute. In Fase 5 la stessa rotta diventa la readinessProbe.
+    healthcheck:
+      # 127.0.0.1 e non localhost: dentro il container quel nome risolve prima
+      # su IPv6, e nginx ascolta solo su IPv4.
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  mongo-data:
+  rabbitmq-data:
+  minio-data:

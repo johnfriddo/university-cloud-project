@@ -1,0 +1,50 @@
+# Sovrapposizione per i test: aggiunge il container che li esegue.
+#
+# Si usa insieme a docker-compose.yml e sempre con un nome di progetto diverso
+# (`-p media-platform-test`) e con .env.test, così lo stack di prova nasce con
+# database vuoti e non tocca quello di sviluppo. Vedi scripts/test.sh.
+#
+# Perché uno stack a sé e non quello di tutti i giorni: i link firmati valgono
+# per l'indirizzo del browser (`localhost:9000`), che dall'interno di un
+# container non esiste. Nello stack di prova quell'indirizzo diventa il nome
+# interno `minio`, e i test possono caricare davvero un file.
+
+services:
+  tests:
+    # Senza questo profilo il container partirebbe con un normale
+    # `docker compose up`. Parte solo quando lo si chiede.
+    profiles: ["test"]
+    build:
+      context: ../../services
+      dockerfile: ../deploy/compose/Dockerfile.tests
+    environment:
+      # Dentro la rete di compose l'API si chiama così. Niente Nginx di mezzo:
+      # i test provano l'API, non l'inoltro.
+      API_BASE: http://api-service:8000
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+    volumes:
+      # Tutta la repo, montata: il codice provato è quello sul disco.
+      - ../..:/repo
+    working_dir: /repo
+    depends_on:
+      api-service:
+        condition: service_healthy
+      worker-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+
+  frontend-tests:
+    # I test del frontend. Riusano il primo stadio del Dockerfile del frontend,
+    # quello dove Node compila: ha già le dipendenze installate, e restano in
+    # cache finché package-lock.json non cambia. Non serve Node sul Mac.
+    profiles: ["test"]
+    build:
+      context: ../../services/frontend
+      target: build
+    volumes:
+      # Il codice montato dal disco, come per i test Python.
+      - ../../services/frontend/src:/build/src
+    working_dir: /build
+    command: ["npx", "ng", "test", "--watch=false"]

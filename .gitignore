@@ -1,0 +1,219 @@
+# ============================================================
+# Segreti e configurazione locale — la sezione più importante
+# ============================================================
+.env
+.env.*
+!.env.example
+# Configurazione dello stack di prova: valori usa e getta, va versionata.
+!.env.test
+*.env
+!example.env
+
+# Credenziali AWS
+.aws/
+credentials
+aws-credentials*
+*.pem
+*.ppk
+id_rsa
+id_rsa.*
+*.p12
+
+# Chiavi e certificati (l'example resta versionato)
+*.key
+*.crt
+*.csr
+!**/example.crt
+
+# Password vault di Ansible
+.vault_pass
+vault-password*
+*.vault
+
+# ============================================================
+# Python — api-service, worker-service, notification-service
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib60/
+parts/
+sdist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Ambienti virtuali
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Test e analisi statica
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ============================================================
+# Angular / Node — frontend
+# ============================================================
+node_modules/
+/services/frontend/dist/
+/services/frontend/tmp/
+/services/frontend/out-tsc/
+.angular/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+# package-lock.json va committato: garantisce build riproducibili
+
+# ============================================================
+# Docker e volumi dei dati locali
+# ============================================================
+docker-compose.override.yml
+.docker/
+data/
+volumes/
+postgres-data/
+mongo-data/
+minio-data/
+rabbitmq-data/
+
+# File di prova caricati durante lo sviluppo
+uploads/
+tmp-uploads/
+*.local.jpg
+*.local.png
+
+# ============================================================
+# Terraform
+# ============================================================
+.terraform/
+.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# I .tfvars contengono spesso valori sensibili
+*.tfvars
+*.tfvars.json
+!example.tfvars
+!terraform.tfvars.example
+# .terraform.lock.hcl va invece committato: blocca le versioni dei provider
+
+# ============================================================
+# Ansible
+# ============================================================
+*.retry
+.ansible/
+ansible/inventory/hosts.local
+ansible/roles/external/
+fact_cache/
+
+# ============================================================
+# Kubernetes e Helm
+# ============================================================
+kubeconfig
+kubeconfig-*
+*.kubeconfig
+admin.conf
+.kube/
+# Dipendenze scaricate dei chart (il Chart.lock va committato)
+deploy/helm/**/charts/
+*.tgz
+# Values con dati reali o segreti
+values.local.yaml
+values.secret.yaml
+secrets.yaml
+sealed-secrets-key*
+
+# ============================================================
+# Multipass
+# ============================================================
+.multipass/
+cloud-init-generated*.yaml
+
+# ============================================================
+# IDE e editor
+# ============================================================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ============================================================
+# Sistema operativo
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ============================================================
+# Installer scaricati a mano
+# ============================================================
+# Per esempio AWSCLIV2.pkg, l'installer dell'AWS CLI: pesa decine di megabyte e
+# non è codice del progetto.
+*.pkg
+
+# ============================================================
+# Log e file temporanei
+# ============================================================
+*.log
+logs/
+*.pid
+*.seed
+*.tmp
+tmp/
+temp/
+
+# ============================================================
+# Documentazione
+# ============================================================
+# Tutta la cartella docs/ è ignorata, tranne i tre schemi dell'architettura.
+#
+# Si scrive `docs/*` e non `docs/`: ignorare la cartella intera impedirebbe a
+# git di guardarci dentro, e le eccezioni qui sotto non varrebbero più.
+#
+# Attenzione: questa regola vale solo per i file NUOVI. Quelli già tracciati
+# restano nel repository finché non si eseguono `git rm --cached`.
+docs/*
+!docs/architettura_locale.png
+!docs/architettura_cloud.png
+!docs/architettura-locale-reale.svg
