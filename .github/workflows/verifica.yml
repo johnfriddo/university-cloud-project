@@ -1,0 +1,155 @@
+# Verifica a ogni push: quello che si può controllare senza un cluster.
+#
+# Non è ancora la pipeline di distribuzione — quella arriva in Fase 7, con la
+# costruzione delle immagini, ECR e il deploy. Questa risponde a una domanda
+# sola: **il codice sul ramo principale è sano?**
+#
+# I comandi sono gli stessi che si lanciano sul portatile. Non è pigrizia: se
+# la CI eseguisse comandi suoi, prima o poi i due elenchi divergerebbero e
+# «passa in locale ma non in CI» diventerebbe una frase ricorrente.
+# `scripts/test.sh` gira interamente dentro Docker, quindi funziona identico
+# qui e là.
+name: Verifica
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Per poterla lanciare a mano dall'interfaccia di GitHub.
+  workflow_dispatch:
+
+# Un push che ne segue un altro sullo stesso ramo annulla il primo: la risposta
+# che interessa è sull'ultimo commit, e i minuti di esecuzione non sono infiniti.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  applicazione:
+    name: Applicazione
+    runs-on: ubuntu-latest
+    # Costruire quattro immagini da zero, senza cache, è la parte lenta.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Stile del codice Python
+        run: scripts/test.sh lint
+
+      - name: Test di unità
+        run: scripts/test.sh unit
+
+      - name: Test del frontend
+        run: scripts/test.sh frontend
+
+      - name: Test di integrazione
+        # Accende lo stack di prova — otto container, database vuoti — e fa
+        # girare il sistema intero. È anche l'unico passo che costruisce
+        # l'immagine del frontend, quindi qui si scopre se la compilazione di
+        # Angular è rotta.
+        run: scripts/test.sh integration
+
+      - name: Registri dei servizi, se qualcosa è andato storto
+        # Senza, un fallimento in CI lascia solo il nome del test. Con, si
+        # legge cosa ha detto il servizio nel momento in cui ha fallito.
+        if: failure()
+        run: |
+          cd deploy/compose
+          docker compose -p media-platform-test --env-file .env.test \
+            -f docker-compose.yml -f docker-compose.test.yml \
+            logs --tail=200 api-service worker-service notification-service
+
+      - name: Spengo lo stack di prova
+        if: always()
+        run: scripts/test.sh down
+
+  infrastruttura:
+    name: Infrastruttura
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Gli strumenti arrivano dalle loro fonti ufficiali invece che da azioni
+      # di terze parti: una dipendenza in meno da fidarsi, e la versione si
+      # legge qui.
+      - name: Installo Helm, Terraform e Ansible
+        env:
+          HELM_VERSION: v4.3.0
+          TERRAFORM_VERSION: 1.16.3
+        run: |
+          set -euo pipefail
+
+          curl -fsSL -o helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSL -o helm.sha256 "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
+          echo "$(cut -d' ' -f1 helm.sha256)  helm.tgz" | sha256sum -c -
+          tar -xzf helm.tgz linux-amd64/helm
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+
+          curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          curl -fsSL -o terraform.sums "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          grep linux_amd64 terraform.sums | sed 's|terraform_.*_linux_amd64.zip|terraform.zip|' | sha256sum -c -
+          unzip -q terraform.zip terraform
+          sudo install -m 0755 terraform /usr/local/bin/terraform
+
+          pipx install ansible-core
+
+      - name: Il chart si scrive per intero
+        run: |
+          set -euo pipefail
+          helm lint deploy/helm/media-platform --set-string secrets.jwtSecret=$(head -c 48 /dev/zero | tr '\0' 'x')
+
+          # Credenziali finte, usate e buttate: servono solo a far passare il
+          # controllo del chart, che si rifiuta di generarsi senza.
+          cat > /tmp/valori-ci.yaml <<'YAML'
+          secrets:
+            postgresUser: ci
+            postgresPassword: credenziale-di-prova
+            mongoUser: ci
+            mongoPassword: credenziale-di-prova
+            rabbitmqUser: ci
+            rabbitmqPassword: credenziale-di-prova
+            minioRootUser: ci
+            minioRootPassword: credenziale-di-prova
+            jwtSecret: chiave-di-prova-lunga-almeno-trentadue-caratteri
+          YAML
+          helm template media-platform deploy/helm/media-platform \
+            --values /tmp/valori-ci.yaml > /tmp/reso.yaml
+          echo "generati $(grep -c '^kind:' /tmp/reso.yaml) oggetti Kubernetes"
+
+      - name: Il chart si rifiuta di generarsi senza credenziali
+        # Una prova al contrario: il chart deve **fallire** quando le
+        # credenziali mancano. Se un giorno smettesse di farlo, si
+        # installerebbe un sistema con password vuote senza che nessuno lo
+        # noti.
+        run: |
+          if helm template media-platform deploy/helm/media-platform >/dev/null 2>&1; then
+            echo "il chart si è generato senza credenziali: il controllo non funziona più" >&2
+            exit 1
+          fi
+          echo "rifiutato, come deve"
+
+      - name: Terraform è formattato e valido
+        working-directory: deploy/terraform/local
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive -diff
+          # -backend=false: non serve nessuno stato né nessuna credenziale per
+          # controllare che la configurazione sia scritta bene.
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: I playbook Ansible sono scritti bene
+        working-directory: deploy/ansible
+        run: |
+          set -euo pipefail
+          python3 inventory/multipass.py --list >/dev/null \
+            || echo "inventario non interrogabile senza Multipass: atteso in CI"
+          ansible-playbook site.yml --syntax-check
+          ansible-playbook ping.yml --syntax-check

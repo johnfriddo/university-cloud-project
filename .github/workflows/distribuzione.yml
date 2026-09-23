@@ -1,0 +1,123 @@
+# Costruisce le immagini, le carica su ECR e installa l'applicazione su EKS.
+#
+# Si lancia a mano, non a ogni push, e per una ragione precisa: l'ambiente AWS
+# resta acceso solo quando serve, e un deploy automatico su un cluster spento
+# fallirebbe ogni volta. `verifica.yml` invece gira a ogni push, perché quella
+# non ha bisogno di niente di acceso.
+#
+# Nessuna chiave di accesso: il workflow assume un ruolo IAM presentando il
+# token che GitHub firma per questa esecuzione (OIDC). Il ruolo accetta solo
+# questo repository e questo ramo — la condizione è in
+# deploy/terraform/aws/infra/github.tf. Le uniche due cose da impostare nel
+# repository sono variabili, non segreti:
+#
+#   AWS_ROLE_ARN   l'uscita `github_role_arn` di Terraform
+#   AWS_REGION     eu-central-1
+name: Distribuzione su AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      etichetta:
+        description: "Etichetta delle immagini (vuoto: il commit)"
+        required: false
+        default: ""
+
+# Due esecuzioni insieme scriverebbero sullo stesso stato di Terraform. Il
+# blocco su S3 le fermerebbe comunque, ma con un errore invece che con
+# un'attesa: meglio dirlo qui.
+concurrency:
+  group: distribuzione-aws
+  cancel-in-progress: false
+
+permissions:
+  # Il permesso di farsi firmare il token OIDC da GitHub. È questo che
+  # sostituisce le chiavi di accesso.
+  id-token: write
+  contents: read
+
+jobs:
+  distribuisci:
+    name: Immagini su ECR e applicazione su EKS
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Ottengo le credenziali temporanee
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Accesso a ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Decido l'etichetta
+        id: tag
+        run: |
+          etichetta="${{ inputs.etichetta }}"
+          # Il commit, accorciato: un'etichetta che dice esattamente quale
+          # codice sta girando, e che due build diverse non condividono mai.
+          [ -n "$etichetta" ] || etichetta="${GITHUB_SHA::12}"
+          echo "valore=$etichetta" >> "$GITHUB_OUTPUT"
+          echo "Etichetta: $etichetta"
+
+      - name: Costruisco e carico le quattro immagini
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.valore }}
+        run: |
+          set -euo pipefail
+          # Nessun --platform: questi esecutori sono già x86, come i nodi.
+          # Sul Mac la stessa costruzione passa per l'emulazione ed è lenta;
+          # qui è la macchina giusta per il lavoro.
+          for servizio in api-service worker-service notification-service; do
+            docker build \
+              -f "services/${servizio}/Dockerfile" \
+              -t "${REGISTRY}/media-platform/${servizio}:${TAG}" \
+              services
+            docker push "${REGISTRY}/media-platform/${servizio}:${TAG}"
+          done
+
+          # Il frontend si costruisce dalla propria cartella: non gli serve il
+          # pacchetto condiviso di Python.
+          docker build -t "${REGISTRY}/media-platform/frontend:${TAG}" services/frontend
+          docker push "${REGISTRY}/media-platform/frontend:${TAG}"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.16.3"
+          terraform_wrapper: false
+
+      - name: Installo l'applicazione
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          TAG: ${{ steps.tag.outputs.valore }}
+        run: |
+          set -euo pipefail
+          deploy/terraform/aws/tf.sh app apply \
+            -input=false -auto-approve -var "image_tag=${TAG}"
+
+      - name: L'indirizzo, e un giro completo per vedere se risponde
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          indirizzo=$(deploy/terraform/aws/tf.sh app output -raw app_url)
+          echo "### Applicazione distribuita" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- indirizzo: <$indirizzo>" >> "$GITHUB_STEP_SUMMARY"
+          echo "- immagini: \`${{ steps.tag.outputs.valore }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # La prova di fumo è la stessa del cluster locale: undici passi
+          # attraverso la porta d'ingresso, dal punto di vista di un browser.
+          # Un deploy che finisce senza che nessuno abbia provato a caricare
+          # un'immagine non ha dimostrato niente.
+          #
+          # Nota: usa `sips`, che è di macOS. Sul runner Linux l'immagine di
+          # prova si prepara con ImageMagick, già installato.
+          sudo apt-get install -y --no-install-recommends imagemagick >/dev/null 2>&1 || true
+          BASE="$indirizzo" deploy/cluster/smoke.sh
